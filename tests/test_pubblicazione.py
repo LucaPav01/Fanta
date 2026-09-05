@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app_data import connect_read_only
+from app_data import FilterState, connect_read_only, exact_search_result, query_players
 from importa_database import export_app_database, upsert_players_and_aliases
 
 
@@ -93,6 +93,26 @@ class TestPubblicazione(unittest.TestCase):
         self.assertEqual(excluded, 0)
         self.assertIsNotNone(barella)
         self.assertEqual(barella[0], "Nicolò Barella")
+
+    def test_varianti_del_nome_aprono_una_sola_scheda_canonica(self):
+        database = Path(__file__).resolve().parents[1] / "fantacalcio_app.db"
+
+        with connect_read_only(database) as published:
+            cases = {
+                "Nicolò Barella": "Nicolò Barella",
+                "Nicolo Barella": "Nicolò Barella",
+                "Barella": "Nicolò Barella",
+                "Lautaro Martinez": "Lautaro Martinez",
+                "Martinez Lautaro": "Lautaro Martinez",
+            }
+            for search, canonical_name in cases.items():
+                with self.subTest(search=search):
+                    rows = query_players(published, FilterState(search=search))
+                    player_id = exact_search_result(rows, search)
+                    self.assertIsNotNone(player_id)
+                    matched = [row for row in rows if row["player_id"] == player_id]
+                    self.assertEqual(len(matched), 1)
+                    self.assertEqual(matched[0]["player_name"], canonical_name)
 
 
 if __name__ == "__main__":
