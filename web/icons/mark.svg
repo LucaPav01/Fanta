@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fanta">
+  <rect width="512" height="512" rx="112" fill="#0b0d11"/>
+  <circle cx="256" cy="256" r="156" fill="#f2f3f5"/>
+  <path d="M256 154l52 38-20 61h-64l-20-61zM167 219l57 34 20 61-47 45-54-38 4-63zm202 0 20 61-47 45-54-38 20-61zm-152 140 39-45h64l39 45-25 58h-92z" fill="#4f8cff"/>
+  <circle cx="368" cy="365" r="58" fill="#e6b448" stroke="#0b0d11" stroke-width="14"/>
+  <path d="M368 333v64M344 354h43M344 379h43" stroke="#0b0d11" stroke-width="12" stroke-linecap="round"/>
+</svg>

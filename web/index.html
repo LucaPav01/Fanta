@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d11">
+  <title>Fanta</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/favicon-192.png">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="app-header__row">
+        <input id="player-search" class="app-header__search" type="search" placeholder="Cerca giocatore o squadra" inputmode="search" autocomplete="off" aria-label="Cerca giocatore o squadra">
+      </div>
+      <div id="player-controls" class="player-controls" aria-label="Filtri giocatori">
+        <div id="role-filter" class="segmented-control" role="group" aria-label="Filtra per ruolo">
+          <button type="button" class="segmented-control__item is-active" data-role="">Tutti</button>
+          <button type="button" class="segmented-control__item" data-role="GK">P</button>
+          <button type="button" class="segmented-control__item" data-role="DEF">D</button>
+          <button type="button" class="segmented-control__item" data-role="MID">C</button>
+          <button type="button" class="segmented-control__item" data-role="FWD">A</button>
+        </div>
+        <div class="player-controls__actions">
+          <button id="team-filter-button" class="filter-button" type="button">Squadra</button>
+          <button id="sort-button" class="filter-button" type="button">Ordina</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="view" class="app-view" role="main"></main>
+
+    <nav class="tab-bar" aria-label="Navigazione principale">
+      <button class="tab-bar__item" data-route="giocatori" aria-current="page">
+        <span class="tab-bar__icon" aria-hidden="true">&#9917;</span>
+        <span>Giocatori</span>
+      </button>
+      <button class="tab-bar__item" data-route="preferiti">
+        <span class="tab-bar__icon" aria-hidden="true">&#9733;</span>
+        <span>Preferiti</span>
+      </button>
+      <button class="tab-bar__item" data-route="asta">
+        <span class="tab-bar__icon" aria-hidden="true">&#128176;</span>
+        <span>Asta</span>
+      </button>
+    </nav>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

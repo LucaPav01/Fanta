@@ -937,6 +937,10 @@ def main():
 
     conn.close()
 
+    from export_web_data import export_players_json
+    n_web_exported = export_players_json()
+    print(f"  {n_web_exported} giocatori esportati in web/data/players.json")
+
 
 if __name__ == "__main__":
     sys.exit(main())
