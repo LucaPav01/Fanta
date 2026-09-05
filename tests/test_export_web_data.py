@@ -29,7 +29,6 @@ class TestExportWebData(unittest.TestCase):
         )
 
         required_json_fields = ("id", "name", "team", "role", "search_blob")
-        allowed_tiers = {"Fascia 1", "Fascia 2", "Fascia 3", "Fascia 4", "Fascia 5"}
         for player in payload["players"]:
             for field in required_json_fields:
                 self.assertIsNotNone(player.get(field), f"{field} nullo per {player.get('id')}")
@@ -45,9 +44,18 @@ class TestExportWebData(unittest.TestCase):
                 self.assertIsNone(player["fvm_percentile"])
                 self.assertIsNone(player["fvm_tier"])
             else:
-                self.assertIn(player["fvm_tier"], allowed_tiers)
+                self.assertRegex(player["fvm_tier"], r"^Fascia [1-9][0-9]*$")
                 self.assertGreaterEqual(player["fvm_percentile"], 0)
                 self.assertLessEqual(player["fvm_percentile"], 100)
+
+        for role, limit in {"GK": 5, "DEF": 10, "MID": 10, "FWD": 10}.items():
+            with self.subTest(role=role):
+                tier_counts = {}
+                for player in payload["players"]:
+                    if player["role"] == role and player["fvm_tier"]:
+                        tier_counts[player["fvm_tier"]] = tier_counts.get(player["fvm_tier"], 0) + 1
+                self.assertTrue(tier_counts)
+                self.assertTrue(all(count <= limit for count in tier_counts.values()))
 
     def test_esportazione_solleva_errore_se_un_campo_obbligatorio_e_nullo(self):
         with tempfile.TemporaryDirectory() as directory:

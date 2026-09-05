@@ -315,14 +315,35 @@ class TestSchemaENormalizzazione(unittest.TestCase):
 
         self.assertEqual(rows["f1"], rows["f2"])
         self.assertEqual(rows["f1"][0], 0.0)
-        self.assertEqual(rows["f1"][1], "Fascia 5")
+        self.assertEqual(rows["f1"][1], "Fascia 1")
         self.assertEqual(rows["f4"][0], 100.0)
         self.assertEqual(rows["f4"][1], "Fascia 1")
         # d1 e f4 hanno lo stesso FVM ma appartengono a pool di ruolo diversi: d1 e'
         # l'unico DEF del fixture, quindi il suo percentile e' relativo a un pool di
-        # un solo elemento (0.0 per definizione), non al pool FWD di f4.
-        self.assertEqual(rows["d1"], (0.0, "Fascia 5"))
+        # un solo elemento (0.0 per definizione), non al pool FWD di f4. Essendo
+        # anche il primo del proprio ruolo, e' nella Fascia 1.
+        self.assertEqual(rows["d1"], (0.0, "Fascia 1"))
         self.assertNotEqual(rows["d1"], rows["f4"])
+
+    def test_fasce_fvm_hanno_la_capienza_massima_per_ruolo(self):
+        self._setup_fasce_fixture()
+        for position in range(21):
+            self._insert_player_con_fvm(f"f{position:02}", "FWD", 100 - position)
+        for position in range(11):
+            self._insert_player_con_fvm(f"g{position:02}", "GK", 100 - position)
+
+        rows = self.db.execute(
+            "SELECT role, fvm_tier, COUNT(*) FROM app_players "
+            "GROUP BY role, fvm_tier ORDER BY role, fvm_tier"
+        ).fetchall()
+        counts = {(role, tier): count for role, tier, count in rows}
+
+        self.assertEqual(counts[("FWD", "Fascia 1")], 10)
+        self.assertEqual(counts[("FWD", "Fascia 2")], 10)
+        self.assertEqual(counts[("FWD", "Fascia 3")], 1)
+        self.assertEqual(counts[("GK", "Fascia 1")], 5)
+        self.assertEqual(counts[("GK", "Fascia 2")], 5)
+        self.assertEqual(counts[("GK", "Fascia 3")], 1)
 
     def test_fascia_fvm_e_null_quando_il_fvm_manca(self):
         self._setup_fasce_fixture()

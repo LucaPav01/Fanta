@@ -24,8 +24,8 @@ export function roleLabel(role) {
 }
 
 function tierClass(tier) {
-  const match = /^Fascia ([1-5])$/.exec(tier || "");
-  return match ? `badge--tier-${match[1]}` : "badge--tier-missing";
+  const match = /^Fascia ([1-9]\d*)$/.exec(tier || "");
+  return match ? `badge--tier-${Math.min(Number(match[1]), 4)}` : "badge--tier-missing";
 }
 
 function tierBadge(tier) {

@@ -6,7 +6,6 @@ const ROUTES = ["giocatori", "preferiti", "asta"];
 const DEFAULT_AUCTION = { budget: 500, squad_composition: { GK: 3, DEF: 8, MID: 8, FWD: 6 } };
 const ROLE_ORDER = ["GK", "DEF", "MID", "FWD"];
 const SORT_OPTIONS = [{ value: "fvm", label: "FVM" }, { value: "price", label: "Prezzo medio" }, { value: "is", label: "IS" }, { value: "name", label: "Nome" }, { value: "team", label: "Squadra" }];
-const TIER_OPTIONS = [1, 2, 3, 4, 5].map((tier) => ({ value: `Fascia ${tier}`, label: `Fascia ${tier}` }));
 const view = document.getElementById("view");
 const searchInput = document.getElementById("player-search");
 const playerControls = document.getElementById("player-controls");
@@ -49,6 +48,11 @@ function sortPlayers(players) {
     const metric = state.sort === "price" ? "price" : state.sort === "is" ? "is_pct" : "fvm";
     return number(b[metric]) - number(a[metric]) || collator.compare(a.name, b.name);
   });
+}
+function tierOptions() {
+  return [...new Set(state.players.map(({ fvm_tier }) => fvm_tier).filter(Boolean))]
+    .sort((a, b) => Number(a.replace("Fascia ", "")) - Number(b.replace("Fascia ", "")))
+    .map((tier) => ({ value: tier, label: tier }));
 }
 function favoriteIds() { return new Set(state.local.preferiti); }
 function statusFor(playerId) {
@@ -343,7 +347,7 @@ function openTeamPicker() {
   openOptionsSheet({ title: "Squadra", selected: state.team, options: [{ value: "", label: "Tutte le squadre" }, ...teams.map((team) => ({ value: team, label: team }))], onSelect: (team) => { state.team = team; renderPlayers(); } });
 }
 function openTierPicker() {
-  openOptionsSheet({ title: "Fascia FVM", selected: state.tier, options: [{ value: "", label: "Tutte le fasce" }, ...TIER_OPTIONS], onSelect: (tier) => { state.tier = tier; renderPlayers(); } });
+  openOptionsSheet({ title: "Fascia FVM", selected: state.tier, options: [{ value: "", label: "Tutte le fasce" }, ...tierOptions()], onSelect: (tier) => { state.tier = tier; renderPlayers(); } });
 }
 function openSortPicker() { openOptionsSheet({ title: "Ordina per", options: SORT_OPTIONS, selected: state.sort, onSelect: (sort) => { state.sort = sort; renderPlayers(); } }); }
 async function loadPlayers() {

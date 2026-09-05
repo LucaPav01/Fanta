@@ -349,13 +349,25 @@ WITH latest_auction AS (
 ), fvm_tiers AS (
     -- Percentile del FVM tra i soli giocatori con ruolo e FVM noti, calcolato
     -- separatamente per ruolo (un FWD non va confrontato con un GK). PERCENT_RANK
-    -- assegna lo stesso percentile a valori di FVM pari (parità), a differenza di
-    -- RANK/ROW_NUMBER che li spezzerebbe arbitrariamente.
+    -- assegna lo stesso percentile a valori di FVM pari.
+    --
+    -- Le fasce sono invece gruppi operativi a capienza fissa: massimo 10
+    -- giocatori per DEF/MID/FWD e 5 per GK. Per rispettare rigorosamente tale
+    -- capienza anche se una parità attraversa il confine della fascia, l'ordine
+    -- secondario e' stabile (nome canonico, poi player_id).
     SELECT rr.player_id,
            ROUND(PERCENT_RANK() OVER (
                PARTITION BY rr.role ORDER BY fq.fvm_classic_1000
-           ) * 100, 1) AS fvm_percentile
+           ) * 100, 1) AS fvm_percentile,
+           ROW_NUMBER() OVER (
+               PARTITION BY rr.role
+               ORDER BY fq.fvm_classic_1000 DESC,
+                        p.canonical_full_name COLLATE NOCASE,
+                        rr.player_id
+           ) AS fvm_position,
+           CASE rr.role WHEN 'GK' THEN 5 ELSE 10 END AS fvm_tier_size
     FROM resolved_role rr
+    JOIN players p ON p.player_id = rr.player_id
     JOIN latest_quotation fq ON fq.player_id = rr.player_id
     WHERE rr.role IS NOT NULL AND fq.fvm_classic_1000 IS NOT NULL
 )
@@ -374,12 +386,8 @@ SELECT
          ELSE fq.fvm_classic_1000 * af.budget_bucket / 1000.0 END AS fvm_parametrized,
     af.budget_bucket AS fvm_budget,
     ft.fvm_percentile,
-    CASE WHEN ft.fvm_percentile IS NULL THEN NULL
-         WHEN ft.fvm_percentile >= 80 THEN 'Fascia 1'
-         WHEN ft.fvm_percentile >= 60 THEN 'Fascia 2'
-         WHEN ft.fvm_percentile >= 40 THEN 'Fascia 3'
-         WHEN ft.fvm_percentile >= 20 THEN 'Fascia 4'
-         ELSE 'Fascia 5' END AS fvm_tier,
+    CASE WHEN ft.fvm_position IS NULL THEN NULL
+         ELSE 'Fascia ' || (CAST((ft.fvm_position - 1) / ft.fvm_tier_size AS INTEGER) + 1) END AS fvm_tier,
     ae.average_price AS average_auction_price,
     af.teams_bucket AS auction_teams,
     af.budget_bucket AS auction_budget,
