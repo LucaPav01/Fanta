@@ -79,9 +79,13 @@ def query_players(connection: sqlite3.Connection, filters: FilterState) -> list[
     clauses = []
     parameters: list[str] = []
     if filters.search:
-        clauses.append("(app_normalize(player_name) LIKE ? OR app_normalize(name_aliases) LIKE ?)")
-        term = f"%{normalize_name(filters.search)}%"
-        parameters.extend((term, term))
+        # Le fonti possono salvare lo stesso nome come "Nome Cognome",
+        # "COGNOME Nome" o senza spazio. Ogni termine deve quindi comparire,
+        # ma il suo ordine non deve cambiare il risultato.
+        for token in normalize_name(filters.search).split():
+            clauses.append("(app_normalize(player_name) LIKE ? OR app_normalize(name_aliases) LIKE ?)")
+            term = f"%{token}%"
+            parameters.extend((term, term))
     if filters.team != "Tutte":
         clauses.append("team_name = ?")
         parameters.append(filters.team)
@@ -128,7 +132,12 @@ def exact_search_result(rows: list[sqlite3.Row], search: str) -> str | None:
     matches = []
     for row in rows:
         names = [row["player_name"], *(row["name_aliases"] or "").split(",")]
-        if any(normalize_name(name) == target for name in names):
+        target_tokens = sorted(target.split())
+        if any(
+            normalize_name(name) == target
+            or sorted(normalize_name(name).split()) == target_tokens
+            for name in names
+        ):
             matches.append(row["player_id"])
     unique_matches = list(dict.fromkeys(matches))
     if len(unique_matches) == 1:

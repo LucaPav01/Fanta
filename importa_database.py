@@ -189,14 +189,14 @@ def upsert_players_and_aliases(conn, player_aliases: list[dict]) -> None:
                 surname = extract_cognome_quot_online(raw_name)
                 given_name = raw_name[len(surname or ""):].strip(" -")
                 if surname and given_name:
-                    return f"{surname.title()} {given_name}", surname.title(), given_name
+                    return f"{given_name} {surname.title()}", surname.title(), given_name
             if candidate["source_name"] == "fantacalcio-online-csv":
                 clean_name, _ = strip_season_suffix(raw_name)
                 clean_name, _ = strip_nuovo_label(clean_name)
                 surname, given_name, ambiguous = split_full_name(clean_name)
                 if not ambiguous and surname and given_name:
                     surname = surname.title()
-                    return f"{surname} {given_name}", surname, given_name
+                    return f"{given_name} {surname}", surname, given_name
         display = (ordered[0]["canonical_name"] or ordered[0]["alias_raw"]).strip()
         return display, display.split()[0], None
 

@@ -41,6 +41,14 @@ class TestListaGiocatori(unittest.TestCase):
         rows = query_players(self.db, FilterState(search="Nicolo"))
         self.assertEqual([row["player_id"] for row in rows], ["p2"])
 
+    def test_ricerca_tollera_nome_e_cognome_in_ordine_inverso(self):
+        self.db.execute(
+            "UPDATE app_players SET name_aliases = 'BARELLA Nicolò' WHERE player_id = 'p2'"
+        )
+        rows = query_players(self.db, FilterState(search="Nicolo Barella"))
+        self.assertEqual([row["player_id"] for row in rows], ["p2"])
+        self.assertEqual(exact_search_result(rows, "Nicolo Barella"), "p2")
+
     def test_ricerca_parziale_con_un_risultato_apre_la_scheda(self):
         rows = query_players(self.db, FilterState(search="dyba"))
         self.assertEqual(exact_search_result(rows, "dyba"), "p3")
