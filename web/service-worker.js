@@ -1,6 +1,6 @@
 // Incrementare questa versione quando cambiano risorse precache: durante
 // l'attivazione la cache precedente viene eliminata anche per le PWA già installate.
-const CACHE_NAME = "fanta-shell-v4";
+const CACHE_NAME = "fanta-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
