@@ -1,2 +1,9 @@
 /.goodboy
 /sessions/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+quality_report.txt
+*.xlsx
