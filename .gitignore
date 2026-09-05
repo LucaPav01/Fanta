@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-*.db
+/fantacalcio.db
+/fantacalcio_app.db.tmp
 quality_report.txt
 *.xlsx

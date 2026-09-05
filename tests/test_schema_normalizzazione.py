@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from normalizza import ROLE_MAP_CSV, normalize_csv_row
+from importa_database import normalize_fc_it_quotation, normalize_fc_it_statistics
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ class TestSchemaENormalizzazione(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def test_schema_sqlite_crea_le_sette_entita_e_la_vista(self):
+    def test_schema_sqlite_crea_entita_normalizzate_e_viste_app(self):
         objects = dict(
             self.db.execute(
                 "SELECT name, type FROM sqlite_master "
@@ -46,11 +47,113 @@ class TestSchemaENormalizzazione(unittest.TestCase):
             "player_aliases",
             "player_source_records",
             "auction_prices",
+            "auction_price_estimates",
             "player_snapshots",
+            "data_sources",
+            "competition_teams",
+            "app_settings",
+            "fantacalcio_it_quotations",
+            "fantacalcio_it_statistics",
+            "metric_definitions",
         }
         self.assertTrue(expected_tables.issubset(objects))
         self.assertEqual(objects.get("players_enriched"), "view")
+        self.assertEqual(objects.get("app_players"), "view")
+        self.assertEqual(objects.get("app_data_catalog"), "view")
         self.assertEqual(self.db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_normalizza_quotazioni_fantacalcio_it_e_fvm(self):
+        normalized = normalize_fc_it_quotation(
+            {"R": "A", "Rm": "Pc", "Qt.I": 18, "Qt.A": 24, "Diff.": 6, "FVM": 120, "FVM M": 108}
+        )
+        self.assertEqual(normalized["role_classic"], "FWD")
+        self.assertEqual(normalized["quotation_initial"], 18.0)
+        self.assertEqual(normalized["quotation_current"], 24.0)
+        self.assertEqual(normalized["quotation_delta"], 6.0)
+        self.assertEqual(normalized["fvm_classic_1000"], 120.0)
+        self.assertEqual(normalized["fvm_mantra_1000"], 108.0)
+
+    def test_normalizza_statistiche_fantacalcio_it(self):
+        normalized = normalize_fc_it_statistics(
+            {"R": "C", "Pg": 30, "Mv": 6.25, "Fm": 7.1, "Gf": 8, "Ass": 6, "Amm": 4, "Esp": 1}
+        )
+        self.assertEqual(normalized["role_classic"], "MID")
+        self.assertEqual(normalized["appearances"], 30)
+        self.assertEqual(normalized["average_rating"], 6.25)
+        self.assertEqual(normalized["fantasy_average"], 7.1)
+        self.assertEqual(normalized["goals_for"], 8)
+        self.assertEqual(normalized["assists"], 6)
+
+    def test_app_players_esclude_categorie_non_serie_a_ed_espone_stati(self):
+        self.db.executemany(
+            "INSERT INTO teams(team_id, canonical_name) VALUES (?, ?)",
+            [("t-serie-a", "Inter"), ("t-estero", "Estero")],
+        )
+        self.db.executemany(
+            "INSERT INTO players(player_id, canonical_full_name, canonical_last_name, current_team_id) "
+            "VALUES (?, ?, ?, ?)",
+            [("p1", "Mario Rossi", "Rossi", "t-serie-a"), ("p2", "Luigi Bianchi", "Bianchi", "t-estero")],
+        )
+        self.db.execute(
+            "INSERT INTO competition_teams(season, competition_name, team_id) "
+            "VALUES ('2026-2027', 'Serie A', 't-serie-a')"
+        )
+        self.db.executemany(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?)",
+            [("auction_teams", "10"), ("auction_budget", "500")],
+        )
+        for source_id, source_name in (("sr-a", "fantacalcio-online-csv"),
+                                       ("sr-i", "fantacalcio-online-excel"),
+                                       ("sr-f", "fantacalcio-it-quotazioni")):
+            self.db.execute(
+                "INSERT INTO player_source_records "
+                "(source_record_id, batch_id, source_name, source_file, source_row_number, raw_data, raw_hash, "
+                "player_id, team_id, match_status) VALUES (?, 'b', ?, 'source', 1, '{}', ?, 'p1', 't-serie-a', 'matched')",
+                (source_id, source_name, f"hash-{source_id}"),
+            )
+        self.db.execute(
+            "INSERT INTO auction_prices(price_id, player_id, team_id, source_record_id, ruolo, price_10sq_500, valid_from) "
+            "VALUES ('ap', 'p1', 't-serie-a', 'sr-a', 'FWD', 42.5, '2026-2027')"
+        )
+        self.db.execute(
+            "INSERT INTO auction_price_estimates "
+            "(estimate_id, player_id, source_record_id, teams_bucket, budget_bucket, average_price, valid_from) "
+            "VALUES ('ae', 'p1', 'sr-a', 10, 500, 42.5, '2026-2027')"
+        )
+        self.db.execute(
+            "INSERT INTO player_snapshots(snapshot_id, player_id, team_id, source_record_id, is_pct, valid_from) "
+            "VALUES ('ps', 'p1', 't-serie-a', 'sr-i', 78, '2026-2027')"
+        )
+        self.db.execute(
+            "INSERT INTO fantacalcio_it_quotations "
+            "(quotation_id, player_id, source_record_id, role_classic, fvm_classic_1000, valid_from) "
+            "VALUES ('fq', 'p1', 'sr-f', 'FWD', 100, '2026-2027')"
+        )
+
+        rows = self.db.execute(
+            "SELECT player_name, team_name, fvm, fvm_parametrized, average_auction_price, is_pct, data_status "
+            "FROM app_players"
+        ).fetchall()
+        self.assertEqual(rows, [("Mario Rossi", "Inter", 100.0, 50.0, 42.5, 78.0, "available")])
+
+    def test_app_players_segnala_valori_mancanti_senza_inventarli(self):
+        self.db.execute("INSERT INTO teams(team_id, canonical_name) VALUES ('t1', 'Roma')")
+        self.db.execute(
+            "INSERT INTO players(player_id, canonical_full_name, canonical_last_name, current_team_id) "
+            "VALUES ('p1', 'Mario Rossi', 'Rossi', 't1')"
+        )
+        self.db.execute(
+            "INSERT INTO competition_teams(season, competition_name, team_id) VALUES ('2026-2027', 'Serie A', 't1')"
+        )
+        self.db.executemany(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?)",
+            [("auction_teams", "10"), ("auction_budget", "500")],
+        )
+        row = self.db.execute(
+            "SELECT fvm, average_auction_price, is_pct, fvm_status, auction_price_status, is_status, data_status "
+            "FROM app_players"
+        ).fetchone()
+        self.assertEqual(row, (None, None, None, "missing", "missing", "missing", "missing"))
 
     def test_tutte_le_righe_csv_hanno_squadra_e_ruolo_noto(self):
         self.assertEqual(len(self.rows), 716)

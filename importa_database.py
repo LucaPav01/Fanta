@@ -20,6 +20,7 @@ il raw):
   6. Pubblicazione: esporta players_enriched.csv per Google Sheets.
 """
 import csv
+from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
@@ -29,12 +30,19 @@ from pathlib import Path
 
 import openpyxl
 
-from normalizza import make_key, normalize_csv_row
+from normalizza import (
+    make_key,
+    normalize_csv_row,
+    split_full_name,
+    strip_nuovo_label,
+    strip_season_suffix,
+)
 from risolvi_identita import (
     NAMESPACE,
     QUOT_IT_XLSX,
     QUOT_ONLINE_XLSX,
     STAT_XLSX,
+    extract_cognome_quot_online,
     load_quot_online,
     load_xlsx_with_id,
 )
@@ -42,16 +50,17 @@ from risolvi_identita import (
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "fantacalcio.db"
 SCHEMA_PATH = ROOT / "schema.sql"
-CSV_PATH = ROOT / "fantacalcio_prezzi.csv"
 PLAYER_ALIASES_PATH = ROOT / "player_aliases.csv"
 TEAM_ALIASES_PATH = ROOT / "team_aliases.csv"
 MATCH_REVIEW_PATH = ROOT / "match_review.csv"
 ENRICHED_EXPORT_PATH = ROOT / "players_enriched.csv"
 QUALITY_REPORT_PATH = ROOT / "quality_report.txt"
+APP_DATABASE_PATH = ROOT / "fantacalcio_app.db"
+CONFIG_PATH = ROOT / "app_config.json"
 
-# Le fonti fantacalcio.it non hanno una data di pubblicazione esplicita: si
-# usa la stagione come chiave di validità, unica per questa esecuzione.
-SEASON_VALID_FROM = "2026-2027"
+CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+SEASON_VALID_FROM = CONFIG["season"]
+CSV_PATH = ROOT / CONFIG["source_files"]["fantacalcio_online_csv"]
 
 BATCH_ID = str(uuid.uuid4())
 
@@ -162,17 +171,52 @@ def upsert_teams_and_aliases(conn, team_aliases: list[dict]) -> None:
 
 def upsert_players_and_aliases(conn, player_aliases: list[dict]) -> None:
     cur = conn.cursor()
-    seen_players = {}
+    aliases_by_player = {}
+    for row in player_aliases:
+        aliases_by_player.setdefault(row["player_id"], []).append(row)
+
+    def preferred_identity(rows):
+        priority = {
+            "fantacalcio-online-excel": 0,
+            "fantacalcio-online-csv": 1,
+            "fantacalcio-it-statistiche": 2,
+            "fantacalcio-it-quotazioni": 3,
+        }
+        ordered = sorted(rows, key=lambda r: priority.get(r["source_name"], 99))
+        for candidate in ordered:
+            raw_name = (candidate["alias_raw"] or "").strip()
+            if candidate["source_name"] == "fantacalcio-online-excel":
+                surname = extract_cognome_quot_online(raw_name)
+                given_name = raw_name[len(surname or ""):].strip(" -")
+                if surname and given_name:
+                    return f"{surname.title()} {given_name}", surname.title(), given_name
+            if candidate["source_name"] == "fantacalcio-online-csv":
+                clean_name, _ = strip_season_suffix(raw_name)
+                clean_name, _ = strip_nuovo_label(clean_name)
+                surname, given_name, ambiguous = split_full_name(clean_name)
+                if not ambiguous and surname and given_name:
+                    surname = surname.title()
+                    return f"{surname} {given_name}", surname, given_name
+        display = (ordered[0]["canonical_name"] or ordered[0]["alias_raw"]).strip()
+        return display, display.split()[0], None
+
+    seen_players = set()
     for row in player_aliases:
         player_id = row["player_id"]
         if player_id not in seen_players:
-            seen_players[player_id] = row["canonical_name"]
-            last_name = row["canonical_name"].split()[0] if row["canonical_name"] else row["canonical_name"]
+            seen_players.add(player_id)
+            full_name, last_name, first_name = preferred_identity(aliases_by_player[player_id])
             team_id = str(uuid.uuid5(NAMESPACE, f"team:{row['canonical_team_key']}"))
             cur.execute(
-                "INSERT OR IGNORE INTO players "
-                "(player_id, canonical_full_name, canonical_last_name, current_team_id) VALUES (?, ?, ?, ?)",
-                (player_id, row["canonical_name"], last_name, team_id),
+                "INSERT INTO players "
+                "(player_id, canonical_full_name, canonical_last_name, canonical_first_name, current_team_id) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET "
+                "canonical_full_name=excluded.canonical_full_name, "
+                "canonical_last_name=excluded.canonical_last_name, "
+                "canonical_first_name=excluded.canonical_first_name, "
+                "current_team_id=excluded.current_team_id, "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                (player_id, full_name, last_name, first_name, team_id),
             )
         confidence = float(row["match_confidence"]) if row["match_confidence"] else None
         cur.execute(
@@ -237,6 +281,24 @@ def build_auction_prices(conn, record_ids: dict, player_by_row: dict, team_by_ro
              r["price_8sq_350"], r["price_10sq_350"], r["price_8sq_500"], r["price_10sq_500"],
              r["mv"], r["presenze"], SEASON_VALID_FROM),
         )
+        for teams_bucket, budget_bucket, value in (
+            (8, 350, r["price_8sq_350"]),
+            (10, 350, r["price_10sq_350"]),
+            (8, 500, r["price_8sq_500"]),
+            (10, 500, r["price_10sq_500"]),
+        ):
+            estimate_id = str(uuid.uuid5(
+                NAMESPACE,
+                f"auction-estimate:{player_id}:{teams_bucket}:{budget_bucket}:{SEASON_VALID_FROM}",
+            ))
+            cur.execute(
+                "INSERT INTO auction_price_estimates "
+                "(estimate_id, player_id, source_record_id, teams_bucket, budget_bucket, average_price, valid_from) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(player_id, teams_bucket, budget_bucket, valid_from) DO UPDATE SET "
+                "source_record_id=excluded.source_record_id, average_price=excluded.average_price",
+                (estimate_id, player_id, source_record_id, teams_bucket, budget_bucket, value, SEASON_VALID_FROM),
+            )
         n += 1
     conn.commit()
     return n
@@ -245,7 +307,118 @@ def build_auction_prices(conn, record_ids: dict, player_by_row: dict, team_by_ro
 def parse_num(value):
     if value is None or value == "":
         return None
-    return float(value)
+    return float(str(value).replace(",", "."))
+
+
+ROLE_MAP_FANTACALCIO_IT = {"P": "GK", "D": "DEF", "C": "MID", "A": "FWD"}
+
+
+def first_value(raw: dict, *keys):
+    """Legge una colonna accettando le varianti note degli export ufficiali."""
+    for key in keys:
+        if key in raw and raw[key] not in (None, ""):
+            return raw[key]
+    return None
+
+
+def parse_int_num(value):
+    parsed = parse_num(value)
+    return None if parsed is None else int(parsed)
+
+
+def normalize_fc_it_quotation(raw: dict) -> dict:
+    role_raw = str(first_value(raw, "R", "Ruolo") or "").strip().upper()
+    return {
+        "role_classic": ROLE_MAP_FANTACALCIO_IT.get(role_raw),
+        "role_mantra": first_value(raw, "Rm", "R M", "Ruolo Mantra"),
+        "quotation_initial": parse_num(first_value(raw, "Qt.I", "Qt. I", "Quotazione iniziale")),
+        "quotation_current": parse_num(first_value(raw, "Qt.A", "Qt. A", "Quotazione attuale")),
+        "quotation_delta": parse_num(first_value(raw, "Diff.", "Diff", "Differenza")),
+        "fvm_classic_1000": parse_num(first_value(raw, "FVM", "FVM Classic")),
+        "fvm_mantra_1000": parse_num(first_value(raw, "FVM M", "FVM Mantra")),
+    }
+
+
+def normalize_fc_it_statistics(raw: dict) -> dict:
+    role_raw = str(first_value(raw, "R", "Ruolo") or "").strip().upper()
+    return {
+        "role_classic": ROLE_MAP_FANTACALCIO_IT.get(role_raw),
+        "role_mantra": first_value(raw, "Rm", "R M", "Ruolo Mantra"),
+        "appearances": parse_int_num(first_value(raw, "Pg", "PG", "Presenze")),
+        "average_rating": parse_num(first_value(raw, "Mv", "MV", "Media Voto")),
+        "fantasy_average": parse_num(first_value(raw, "Fm", "FM", "Mf", "Fantamedia")),
+        "goals_for": parse_int_num(first_value(raw, "Gf", "GF", "Gol fatti")),
+        "goals_against": parse_int_num(first_value(raw, "Gs", "GS", "Gol subiti")),
+        "penalties_saved": parse_int_num(first_value(raw, "Rp", "RP", "Rigori parati")),
+        "penalties_taken": parse_int_num(first_value(raw, "Rc", "RC", "Rigori calciati")),
+        "penalties_scored": parse_int_num(first_value(raw, "R+", "Rigori segnati")),
+        "penalties_missed": parse_int_num(first_value(raw, "R-", "Rigori sbagliati")),
+        "assists": parse_int_num(first_value(raw, "Ass", "Assist")),
+        "yellow_cards": parse_int_num(first_value(raw, "Amm", "Ammonizioni")),
+        "red_cards": parse_int_num(first_value(raw, "Esp", "Espulsioni")),
+        "own_goals": parse_int_num(first_value(raw, "Au", "Autogol")),
+    }
+
+
+def build_fc_it_quotations(conn, rows, record_ids: dict, player_by_row: dict) -> int:
+    columns = (
+        "role_classic", "role_mantra", "quotation_initial", "quotation_current",
+        "quotation_delta", "fvm_classic_1000", "fvm_mantra_1000",
+    )
+    cur = conn.cursor()
+    n = 0
+    for raw in rows:
+        row_number = raw["_row"]
+        player_id = player_by_row.get(row_number)
+        if not player_id:
+            continue
+        normalized = normalize_fc_it_quotation(raw)
+        quotation_id = str(uuid.uuid5(NAMESPACE, f"fc-it-quotation:{player_id}:{SEASON_VALID_FROM}"))
+        cur.execute(
+            f"INSERT INTO fantacalcio_it_quotations "
+            f"(quotation_id, player_id, source_record_id, {', '.join(columns)}, valid_from) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in columns)}, ?) "
+            "ON CONFLICT(player_id, valid_from) DO UPDATE SET "
+            "source_record_id=excluded.source_record_id, role_classic=excluded.role_classic, "
+            "role_mantra=excluded.role_mantra, quotation_initial=excluded.quotation_initial, "
+            "quotation_current=excluded.quotation_current, quotation_delta=excluded.quotation_delta, "
+            "fvm_classic_1000=excluded.fvm_classic_1000, fvm_mantra_1000=excluded.fvm_mantra_1000",
+            (quotation_id, player_id, record_ids[row_number],
+             *(normalized[column] for column in columns), SEASON_VALID_FROM),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def build_fc_it_statistics(conn, rows, record_ids: dict, player_by_row: dict) -> int:
+    columns = (
+        "role_classic", "role_mantra", "appearances", "average_rating", "fantasy_average",
+        "goals_for", "goals_against", "penalties_saved", "penalties_taken",
+        "penalties_scored", "penalties_missed", "assists", "yellow_cards", "red_cards", "own_goals",
+    )
+    cur = conn.cursor()
+    n = 0
+    for raw in rows:
+        row_number = raw["_row"]
+        player_id = player_by_row.get(row_number)
+        if not player_id:
+            continue
+        normalized = normalize_fc_it_statistics(raw)
+        statistic_id = str(uuid.uuid5(NAMESPACE, f"fc-it-statistic:{player_id}:{SEASON_VALID_FROM}"))
+        cur.execute(
+            f"INSERT INTO fantacalcio_it_statistics "
+            f"(statistic_id, player_id, source_record_id, {', '.join(columns)}, valid_from) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in columns)}, ?) "
+            "ON CONFLICT(player_id, valid_from) DO UPDATE SET "
+            "source_record_id=excluded.source_record_id, " +
+            ", ".join(f"{column}=excluded.{column}" for column in columns),
+            (statistic_id, player_id, record_ids[row_number],
+             *(normalized[column] for column in columns), SEASON_VALID_FROM),
+        )
+        n += 1
+    conn.commit()
+    return n
 
 
 def build_player_snapshots(conn, record_ids: dict, player_by_row: dict, team_by_row: dict) -> int:
@@ -277,6 +450,124 @@ def build_player_snapshots(conn, record_ids: dict, player_by_row: dict, team_by_
         n += 1
     conn.commit()
     return n
+
+
+SOURCE_CATALOG = {
+    "fantacalcio-online-csv": {
+        "display_name": "Fantacalcio-Online · stime d'asta",
+        "source_url": "https://www.fantacalcio-online.com/it/asta-fantacalcio-stima-prezzi",
+        "dataset_kind": "auction_prices",
+    },
+    "fantacalcio-online-excel": {
+        "display_name": "Fantacalcio-Online · profili giocatori",
+        "source_url": "https://www.fantacalcio-online.com/it/",
+        "dataset_kind": "player_profiles",
+    },
+    "fantacalcio-it-statistiche": {
+        "display_name": "Fantacalcio.it · statistiche",
+        "source_url": "https://www.fantacalcio.it/statistiche-serie-a",
+        "dataset_kind": "statistics",
+    },
+    "fantacalcio-it-quotazioni": {
+        "display_name": "Fantacalcio.it · quotazioni",
+        "source_url": "https://www.fantacalcio.it/quotazioni-fantacalcio",
+        "dataset_kind": "quotations",
+    },
+}
+
+
+def file_updated_at(path) -> str | None:
+    source_path = Path(path)
+    if not source_path.exists():
+        return None
+    return datetime.fromtimestamp(source_path.stat().st_mtime, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sync_data_sources(conn, source_files: dict) -> None:
+    cur = conn.cursor()
+    for source_name, source_file in source_files.items():
+        catalog = SOURCE_CATALOG[source_name]
+        counts = cur.execute(
+            "SELECT COUNT(*), "
+            "SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN match_status = 'ambiguous' THEN 1 ELSE 0 END) "
+            "FROM player_source_records WHERE source_name = ?",
+            (source_name,),
+        ).fetchone()
+        row_count, matched_count, ambiguous_count = (value or 0 for value in counts)
+        status = "missing" if row_count == 0 else ("verify" if ambiguous_count else "available")
+        cur.execute(
+            "INSERT INTO data_sources "
+            "(source_name, display_name, source_file, source_url, dataset_kind, season, "
+            "retrieved_at, row_count, matched_count, data_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(source_name) DO UPDATE SET "
+            "display_name=excluded.display_name, source_file=excluded.source_file, "
+            "source_url=excluded.source_url, dataset_kind=excluded.dataset_kind, season=excluded.season, "
+            "retrieved_at=excluded.retrieved_at, imported_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "row_count=excluded.row_count, matched_count=excluded.matched_count, data_status=excluded.data_status",
+            (source_name, catalog["display_name"], Path(source_file).name, catalog["source_url"],
+             catalog["dataset_kind"], SEASON_VALID_FROM, file_updated_at(source_file),
+             row_count, matched_count, status),
+        )
+    conn.commit()
+
+
+def sync_app_configuration(conn, team_aliases: list[dict]) -> None:
+    cur = conn.cursor()
+    competition = CONFIG["competition"]
+    auction_teams = CONFIG["auction"]["teams"]
+    auction_budget = CONFIG["auction"]["budget"]
+    if auction_teams not in (8, 10) or auction_budget not in (350, 500):
+        raise ValueError("Formato asta non disponibile: usare squadre 8/10 e budget 350/500")
+    cur.executemany(
+        "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?) "
+        "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value",
+        (
+            ("season", SEASON_VALID_FROM),
+            ("competition", competition),
+            ("auction_teams", str(auction_teams)),
+            ("auction_budget", str(auction_budget)),
+        ),
+    )
+    cur.execute(
+        "DELETE FROM competition_teams WHERE season = ? AND competition_name = ?",
+        (SEASON_VALID_FROM, competition),
+    )
+    canonical_team_ids = {}
+    for row in team_aliases:
+        canonical_team_ids.setdefault(row["canonical_name"].casefold(), row["team_id"])
+    missing = []
+    for team_name in CONFIG["serie_a_teams"]:
+        team_id = canonical_team_ids.get(team_name.casefold())
+        if not team_id:
+            missing.append(team_name)
+            continue
+        cur.execute(
+            "INSERT INTO competition_teams(season, competition_name, team_id) VALUES (?, ?, ?)",
+            (SEASON_VALID_FROM, competition, team_id),
+        )
+    if missing:
+        raise ValueError(f"Squadre configurate senza alias canonico: {', '.join(missing)}")
+
+    metrics = (
+        ("fvm", "FVM", "Valore teorico editoriale del giocatore in asta, scalabile sul budget della lega.",
+         "crediti su base 1000", "fantacalcio-it-quotazioni", "available"),
+        ("average_auction_price", "Prezzo medio d'asta",
+         "Prezzo medio osservato nelle aste da 9-11 squadre con budget compreso tra 440 e 560 crediti.",
+         "crediti", "fantacalcio-online-csv", "available"),
+        ("is_pct", "IS", "Indice di schierabilità stagionale: probabilità stimata di prendere voto in una giornata.",
+         "percentuale 0-100", "fantacalcio-online-excel", "available"),
+    )
+    cur.executemany(
+        "INSERT INTO metric_definitions "
+        "(metric_key, display_name, meaning, unit, source_name, verification_status) "
+        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(metric_key) DO UPDATE SET "
+        "display_name=excluded.display_name, meaning=excluded.meaning, unit=excluded.unit, "
+        "source_name=excluded.source_name, verification_status=excluded.verification_status",
+        metrics,
+    )
+    conn.commit()
 
 
 # ------------------------------------------------------------------
@@ -323,7 +614,12 @@ def run_quality_checks(conn, counts: dict) -> str:
     n_prices = cur.execute("SELECT COUNT(*) FROM auction_prices").fetchone()[0]
     n_snapshots = cur.execute("SELECT COUNT(*) FROM player_snapshots").fetchone()[0]
     emit(f"  players: {n_players}  teams: {n_teams}")
+    n_fc_quotes = cur.execute("SELECT COUNT(*) FROM fantacalcio_it_quotations").fetchone()[0]
+    n_fc_stats = cur.execute("SELECT COUNT(*) FROM fantacalcio_it_statistics").fetchone()[0]
+    n_app_players = cur.execute("SELECT COUNT(*) FROM app_players").fetchone()[0]
     emit(f"  auction_prices: {n_prices}  player_snapshots: {n_snapshots}")
+    emit(f"  fantacalcio_it_quotations: {n_fc_quotes}  fantacalcio_it_statistics: {n_fc_stats}")
+    emit(f"  app_players (solo Serie A): {n_app_players}")
 
     emit()
     emit("-- Copertura incrociata quotazione/anagrafica --")
@@ -374,6 +670,28 @@ def export_enriched_csv(conn) -> int:
         writer = csv.writer(f)
         writer.writerow(columns)
         writer.writerows(rows)
+    return len(rows)
+
+
+def export_app_database(conn, target_path: Path = APP_DATABASE_PATH) -> int:
+    """Pubblica solo il contratto dati necessario alla UI, senza tabelle raw."""
+    temporary_path = target_path.with_suffix(target_path.suffix + ".tmp")
+    temporary_path.unlink(missing_ok=True)
+    output = sqlite3.connect(temporary_path)
+    try:
+        source = conn.execute("SELECT * FROM app_players")
+        columns = [description[0] for description in source.description]
+        rows = source.fetchall()
+        definitions = ", ".join(f'"{column}"' for column in columns)
+        placeholders = ", ".join("?" for _ in columns)
+        output.execute(f"CREATE TABLE app_players ({definitions})")
+        output.executemany(f"INSERT INTO app_players VALUES ({placeholders})", rows)
+        output.execute("CREATE UNIQUE INDEX app_players_id ON app_players(player_id)")
+        output.execute("CREATE INDEX app_players_filters ON app_players(team_name, role)")
+        output.commit()
+    finally:
+        output.close()
+    temporary_path.replace(target_path)
     return len(rows)
 
 
@@ -436,18 +754,34 @@ def main():
     link_source_records(conn, "fantacalcio-it-statistiche", stat_ids, stat_player_by_row, stat_team_by_row, review_keys)
     link_source_records(conn, "fantacalcio-it-quotazioni", quot_it_ids, quot_it_player_by_row, quot_it_team_by_row, review_keys)
 
-    print("\n[4/6] Arricchimento: auction_prices (CSV) e player_snapshots (Excel-Online)")
+    print("\n[4/6] Normalizzazione delle quattro fonti")
     n_prices = build_auction_prices(conn, csv_ids, csv_player_by_row, csv_team_by_row)
     n_snapshots = build_player_snapshots(conn, excel_online_ids, excel_player_by_row, excel_team_by_row)
+    n_fc_stats = build_fc_it_statistics(conn, stat_rows, stat_ids, stat_player_by_row)
+    n_fc_quotes = build_fc_it_quotations(conn, quot_it_rows, quot_it_ids, quot_it_player_by_row)
+    sync_app_configuration(conn, team_aliases)
+    sync_data_sources(
+        conn,
+        {
+            "fantacalcio-online-csv": CSV_PATH,
+            "fantacalcio-online-excel": QUOT_ONLINE_XLSX,
+            "fantacalcio-it-statistiche": STAT_XLSX,
+            "fantacalcio-it-quotazioni": QUOT_IT_XLSX,
+        },
+    )
     print(f"  auction_prices scritte/aggiornate: {n_prices}")
     print(f"  player_snapshots scritte/aggiornate: {n_snapshots}")
+    print(f"  fantacalcio_it_statistics scritte/aggiornate: {n_fc_stats}")
+    print(f"  fantacalcio_it_quotations scritte/aggiornate: {n_fc_quotes}")
 
     print("\n[5/6] Controlli di qualità")
     run_quality_checks(conn, counts)
 
-    print("\n[6/6] Pubblicazione: export players_enriched.csv")
+    print("\n[6/6] Pubblicazione: export dati e database ridotto per l’app")
     n_exported = export_enriched_csv(conn)
     print(f"  {n_exported} righe esportate in {ENRICHED_EXPORT_PATH.name}")
+    n_published = export_app_database(conn)
+    print(f"  {n_published} giocatori pubblicati in {APP_DATABASE_PATH.name}")
 
     conn.close()
 

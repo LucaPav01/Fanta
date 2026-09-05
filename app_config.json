@@ -1,0 +1,36 @@
+{
+  "season": "2026-2027",
+  "competition": "Serie A",
+  "auction": {
+    "teams": 10,
+    "budget": 500
+  },
+  "source_files": {
+    "fantacalcio_online_csv": "fantacalcio_prezzi.csv",
+    "fantacalcio_online_excel": "Quotazioni Fantacalcio-Online (4).xlsx",
+    "fantacalcio_it_statistics": "Statistiche_Fantacalcio_Stagione_2026_27 (2).xlsx",
+    "fantacalcio_it_quotations": "Quotazioni_Fantacalcio_Stagione_2026_27 (3).xlsx"
+  },
+  "serie_a_teams": [
+    "Atalanta",
+    "Bologna",
+    "Cagliari",
+    "Como",
+    "Fiorentina",
+    "Frosinone",
+    "Genoa",
+    "Inter",
+    "Juventus",
+    "Lazio",
+    "Lecce",
+    "Milan",
+    "Monza",
+    "Napoli",
+    "Parma",
+    "Roma",
+    "Sassuolo",
+    "Torino",
+    "Udinese",
+    "Venezia"
+  ]
+}

@@ -43,10 +43,12 @@ from normalizza import make_key, normalize_csv_row
 NAMESPACE = uuid.UUID("6e2f6a2e-6b8b-4f6e-9c2a-9a8f5e6d2b10")  # namespace fisso del progetto
 
 ROOT = Path(__file__).resolve().parent
-STAT_XLSX = str(ROOT / "Statistiche_Fantacalcio_Stagione_2026_27 (2).xlsx")
-QUOT_IT_XLSX = str(ROOT / "Quotazioni_Fantacalcio_Stagione_2026_27 (3).xlsx")
-QUOT_ONLINE_XLSX = str(ROOT / "Quotazioni Fantacalcio-Online (4).xlsx")
-CSV_PATH = "fantacalcio_prezzi.csv"
+CONFIG = json.loads((ROOT / "app_config.json").read_text(encoding="utf-8"))
+SOURCE_FILES = CONFIG["source_files"]
+STAT_XLSX = str(ROOT / SOURCE_FILES["fantacalcio_it_statistics"])
+QUOT_IT_XLSX = str(ROOT / SOURCE_FILES["fantacalcio_it_quotations"])
+QUOT_ONLINE_XLSX = str(ROOT / SOURCE_FILES["fantacalcio_online_excel"])
+CSV_PATH = ROOT / SOURCE_FILES["fantacalcio_online_csv"]
 
 DISAMBIGUATOR_RE = re.compile(r"^(.*?)\s+([A-Za-zÀ-ÿ]{1,4})\.$")
 
