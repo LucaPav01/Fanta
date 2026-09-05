@@ -20,10 +20,13 @@ from app_data import (
     query_players,
 )
 from app_state import (
+    MY_TEAM_ID,
+    assignment_for,
     cancel_auction_status,
     load_state,
     mark_bought,
     mark_taken,
+    my_purchases,
     normalize_state,
     parse_state,
     save_state,
@@ -231,15 +234,13 @@ def render_player_detail(row) -> None:
         st.info("La scheda contiene dati mancanti, mostrati con —.")
 
     st.markdown("### Stato asta")
-    purchase = next(
-        (
-            item
-            for item in st.session_state[STATE_KEY]["asta"]["miei"]
-            if item["player_id"] == row["player_id"]
-        ),
-        None,
+    assignment = assignment_for(st.session_state[STATE_KEY], row["player_id"])
+    purchase = (
+        {"player_id": assignment["player_id"], "prezzo_pagato": assignment["prezzo_pagato"]}
+        if assignment and assignment["squadra_id"] == MY_TEAM_ID
+        else None
     )
-    is_taken = row["player_id"] in st.session_state[STATE_KEY]["asta"]["presi"]
+    is_taken = assignment is not None and purchase is None
     if purchase:
         st.success(f"Preso da me per {purchase['prezzo_pagato']} crediti")
     elif is_taken:
@@ -275,7 +276,7 @@ def render_player_detail(row) -> None:
 
 def render_auction(rows) -> None:
     state = st.session_state[STATE_KEY]
-    purchases = state["asta"]["miei"]
+    purchases = my_purchases(state)
     total_spent = sum(item["prezzo_pagato"] for item in purchases)
     budget = CONFIG["auction"]["budget"]
     st.metric("Crediti residui", f"{budget - total_spent} / {budget}")

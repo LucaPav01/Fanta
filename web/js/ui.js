@@ -23,6 +23,15 @@ export function roleLabel(role) {
   return ROLE_LABELS[role] || role || "—";
 }
 
+function tierClass(tier) {
+  const match = /^Fascia ([1-5])$/.exec(tier || "");
+  return match ? `badge--tier-${match[1]}` : "badge--tier-missing";
+}
+
+function tierBadge(tier) {
+  return element("span", `badge badge--tier ${tierClass(tier)}`, tier || "Fascia n.d.");
+}
+
 export function createPlayerCard(player, { onOpen, onToggleFavorite, isFavorite = false, auctionStatus = "" }) {
   const card = element("article", "player-card");
   if (auctionStatus) card.classList.add("player-card--taken");
@@ -44,6 +53,7 @@ export function createPlayerCard(player, { onOpen, onToggleFavorite, isFavorite 
   });
 
   const side = element("span", "player-card__side");
+  side.append(tierBadge(player.fvm_tier));
   const isBadge = element("span", `badge badge--${player.is_status === "available" ? "ok" : player.is_status === "verify" ? "warn" : "missing"}`, `IS ${value(player.is_pct, "%")}`);
   side.append(isBadge);
   if (player.data_status !== "available") {
@@ -125,7 +135,7 @@ export function openPlayerDetail(player, actions = {}) {
       controls.append(favorite);
     }
     if (actions.onMarkBought || actions.onMarkTaken || actions.onCancelAuction) {
-      const priceLabel = element("label", "auction-price-label", "Prezzo pagato da te");
+      const priceLabel = element("label", "auction-price-label", "Prezzo pagato");
       const price = document.createElement("input");
       price.className = "auction-price-input";
       price.type = "number";
@@ -133,7 +143,7 @@ export function openPlayerDetail(player, actions = {}) {
       price.step = "1";
       price.inputMode = "numeric";
       price.placeholder = "Crediti";
-      const currentPurchase = actions.auctionStatus?.mine;
+      const currentPurchase = actions.auctionStatus?.assignment;
       if (currentPurchase) price.value = currentPurchase.prezzo_pagato;
       priceLabel.append(price);
       const error = element("p", "auction-action-error");
@@ -149,7 +159,7 @@ export function openPlayerDetail(player, actions = {}) {
         auctionActions.append(button);
       };
       if (actions.onMarkBought) addAction("Preso da me", "action-button--primary", () => actions.onMarkBought(player, Number(price.value)));
-      if (actions.onMarkTaken) addAction("Preso da altri", "", () => actions.onMarkTaken(player));
+      if (actions.onMarkTaken) addAction("Preso da altri", "", () => actions.onMarkTaken(player, Number(price.value)));
       if (actions.onCancelAuction) addAction("Annulla stato asta", "action-button--quiet", () => actions.onCancelAuction(player));
       controls.append(priceLabel, auctionActions, error);
     }
@@ -158,6 +168,8 @@ export function openPlayerDetail(player, actions = {}) {
   const metrics = element("div", "detail-grid");
   [
     ["FVM", value(player.fvm)],
+    ["Fascia FVM", player.fvm_tier || "non disponibile"],
+    ["Percentile nel ruolo", value(player.fvm_percentile, "%")],
     [`FVM su ${player.fvm_budget || "—"} cr`, value(player.fvm_parametrized)],
     ["Prezzo medio", value(player.price)],
     ["Formato prezzo", `${player.auction_teams || "—"} squadre · ${player.auction_budget || "—"} cr`],

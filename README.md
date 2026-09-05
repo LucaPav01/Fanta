@@ -11,6 +11,8 @@ PWA mobile-first per consultare i giocatori di Serie A e gestire lo stato dell'a
 
 Per aggiornare la PWA dopo l'importazione, esegui anche `python3 export_web_data.py`. Per provarla in locale: `cd web && python3 -m http.server 8000`, quindi apri `http://localhost:8000`.
 
+Se vengono modificati file nell'elenco `APP_SHELL` di `web/service-worker.js`, incrementa anche `CACHE_NAME`: in questo modo le PWA già installate eliminano la cache precedente e ricevono le nuove risorse alla prima riapertura online.
+
 ## Pubblicazione
 
 ### Vercel — consigliata
@@ -26,7 +28,7 @@ Il workflow `.github/workflows/deploy-pages.yml` è pronto e pubblica il contenu
 ## Verifica su iPhone
 
 1. Apri l’URL distribuito in Safari, scegli **Condividi → Aggiungi a Home**, poi avvialo dall’icona: deve essere a schermo intero.
-2. Cerca cinque giocatori casuali e verifica anche quelli che prima non venivano trovati (per esempio `Anguissa`, `Ederson`, `Fayed`, `Juan Jesus`, `Nzola`).
-3. Registra dieci acquisti, alternando **Preso da me** e **Preso da altri**; controlla crediti, posti per ruolo e la lista con i già presi nascosti.
+2. Cerca cinque giocatori casuali e verifica anche quelli che prima non venivano trovati (per esempio `Anguissa`, `Ederson`, `Fayed`, `Juan Jesus`, `Nzola`). Applica una fascia FVM insieme a ruolo e squadra, poi controlla che i filtri restino combinati.
+3. Nella scheda **Asta**, crea una squadra avversaria e registra dieci acquisti, alternando **Preso da me** e **Preso da altri**. Controlla crediti, percentuali di budget e posti per ruolo, il riepilogo per squadra e la lista con i già presi nascosti. Dopo l'assegnazione, verifica che il nome della squadra non sia più modificabile o eliminabile.
 4. Chiudi completamente l’app, riaprila dall’icona e verifica che preferiti, rosa e crediti siano rimasti invariati.
 5. Dopo una prima apertura online, abilita la modalità aereo, riapri l’app e verifica ricerca, dettagli e operazioni d’asta. Salva anche un backup JSON dalla scheda Asta.

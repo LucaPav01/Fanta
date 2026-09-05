@@ -1,11 +1,15 @@
 export const STATE_STORAGE_KEY = "fanta_state";
-export const SCHEMA_VERSION = 1;
+export const STATE_V1_BACKUP_STORAGE_KEY = "fanta_state_backup_v1";
+export const SCHEMA_VERSION = 2;
+export const MY_TEAM_ID = "mia";
+export const MAX_OPPONENT_TEAMS = 9;
 
 export function emptyState() {
   return {
     schema_version: SCHEMA_VERSION,
     preferiti: [],
-    asta: { miei: [], presi: [] },
+    squadre: [],
+    assegnazioni: [],
     nascondi_gia_presi: false,
   };
 }
@@ -20,35 +24,89 @@ function playerIds(value, label) {
   return ids;
 }
 
+function migrateV1(value) {
+  if (!value.asta || typeof value.asta !== "object" || Array.isArray(value.asta)) {
+    throw new Error("Lo stato dell'asta non è valido.");
+  }
+  if (!Array.isArray(value.asta.miei)) throw new Error("L'elenco dei tuoi acquisti non è valido.");
+  const mine = value.asta.miei.map((purchase) => ({
+    player_id: purchase?.player_id,
+    squadra_id: MY_TEAM_ID,
+    prezzo_pagato: purchase?.prezzo_pagato,
+  }));
+  const mineIds = new Set(mine.map(({ player_id: id }) => typeof id === "string" ? id.trim() : id));
+  const others = playerIds(value.asta.presi, "I giocatori presi da altri")
+    .filter((id) => !mineIds.has(id))
+    .map((player_id) => ({ player_id, squadra_id: null, prezzo_pagato: null }));
+  return {
+    schema_version: SCHEMA_VERSION,
+    preferiti: value.preferiti,
+    squadre: [],
+    assegnazioni: [...mine, ...others],
+    nascondi_gia_presi: value.nascondi_gia_presi,
+  };
+}
+
 function migrate(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Il backup non contiene uno stato valido.");
-  if (value.schema_version === undefined) return { ...value, schema_version: SCHEMA_VERSION };
+  if (value.schema_version === undefined || value.schema_version === 1) return migrateV1(value);
   if (value.schema_version !== SCHEMA_VERSION) throw new Error("Questo backup usa una versione non supportata dell'app.");
   return value;
 }
 
+function normalizeTeams(value) {
+  if (!Array.isArray(value)) throw new Error("Le squadre avversarie devono essere un elenco.");
+  if (value.length > MAX_OPPONENT_TEAMS) throw new Error(`Puoi configurare al massimo ${MAX_OPPONENT_TEAMS} squadre avversarie.`);
+  const ids = new Set();
+  const names = new Set();
+  return value.map((team) => {
+    if (!team || typeof team !== "object" || Array.isArray(team)) throw new Error("Ogni squadra deve contenere id e nome.");
+    const id = typeof team.id === "string" ? team.id.trim() : "";
+    const nome = typeof team.nome === "string" ? team.nome.trim() : "";
+    if (!id || id === MY_TEAM_ID) throw new Error("Ogni squadra avversaria deve avere un id valido.");
+    if (!nome) throw new Error("Ogni squadra avversaria deve avere un nome.");
+    const normalizedName = nome.toLocaleLowerCase("it-IT");
+    if (ids.has(id)) throw new Error("Gli id delle squadre avversarie devono essere univoci.");
+    if (names.has(normalizedName)) throw new Error("I nomi delle squadre avversarie devono essere univoci.");
+    ids.add(id); names.add(normalizedName);
+    return { id, nome };
+  });
+}
+
+function normalizeAssignments(value, teams) {
+  if (!Array.isArray(value)) throw new Error("Le assegnazioni devono essere un elenco.");
+  const teamIds = new Set(teams.map(({ id }) => id));
+  const byPlayer = new Map();
+  value.forEach((assignment) => {
+    if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) {
+      throw new Error("Ogni assegnazione deve indicare un giocatore e una squadra.");
+    }
+    const playerId = typeof assignment.player_id === "string" ? assignment.player_id.trim() : "";
+    if (!playerId) throw new Error("Ogni assegnazione deve indicare un giocatore valido.");
+    const teamId = assignment.squadra_id === null
+      ? null
+      : typeof assignment.squadra_id === "string" ? assignment.squadra_id.trim() : "";
+    if (teamId !== null && teamId !== MY_TEAM_ID && !teamIds.has(teamId)) {
+      throw new Error("Un'assegnazione fa riferimento a una squadra inesistente.");
+    }
+    const price = assignment.prezzo_pagato;
+    if (price !== null && (!Number.isInteger(price) || price < 1)) {
+      throw new Error("Ogni prezzo pagato deve essere nullo oppure un intero positivo.");
+    }
+    if (teamId !== null && price === null) throw new Error("Le assegnazioni a una squadra devono avere un prezzo pagato.");
+    byPlayer.set(playerId, { player_id: playerId, squadra_id: teamId, prezzo_pagato: price });
+  });
+  return [...byPlayer.values()];
+}
+
 export function normalizeState(value) {
   const state = migrate(value);
-  if (!state.asta || typeof state.asta !== "object" || Array.isArray(state.asta)) throw new Error("Lo stato dell'asta non è valido.");
-  const mieiById = new Map();
-  if (!Array.isArray(state.asta.miei)) throw new Error("L'elenco dei tuoi acquisti non è valido.");
-  state.asta.miei.forEach((purchase) => {
-    if (!purchase || typeof purchase !== "object" || typeof purchase.player_id !== "string" || !purchase.player_id.trim()) {
-      throw new Error("Ogni acquisto deve indicare un giocatore.");
-    }
-    const price = purchase.prezzo_pagato;
-    if (!Number.isInteger(price) || price < 1) throw new Error("Ogni prezzo pagato deve essere un intero positivo.");
-    mieiById.set(purchase.player_id.trim(), { player_id: purchase.player_id.trim(), prezzo_pagato: price });
-  });
-  const miei = [...mieiById.values()];
-  const mieiIds = new Set(miei.map(({ player_id: id }) => id));
+  const teams = normalizeTeams(state.squadre);
   return {
     schema_version: SCHEMA_VERSION,
     preferiti: playerIds(state.preferiti, "I preferiti"),
-    asta: {
-      miei,
-      presi: playerIds(state.asta.presi, "I giocatori presi da altri").filter((id) => !mieiIds.has(id)),
-    },
+    squadre: teams,
+    assegnazioni: normalizeAssignments(state.assegnazioni, teams),
     nascondi_gia_presi: Boolean(state.nascondi_gia_presi),
   };
 }
@@ -70,7 +128,19 @@ export function parseState(serialized) {
 export function loadState(storage = window.localStorage) {
   try {
     const saved = storage.getItem(STATE_STORAGE_KEY);
-    return { state: saved ? parseState(saved) : emptyState(), warning: "" };
+    if (!saved) return { state: emptyState(), warning: "" };
+    const raw = JSON.parse(saved);
+    const isV1 = raw?.schema_version === undefined || raw?.schema_version === 1;
+    const state = normalizeState(raw);
+    if (isV1) {
+      try {
+        if (!storage.getItem(STATE_V1_BACKUP_STORAGE_KEY)) storage.setItem(STATE_V1_BACKUP_STORAGE_KEY, saved);
+        storage.setItem(STATE_STORAGE_KEY, serializeState(state));
+      } catch (_) {
+        return { state, warning: "Stato v1 recuperato, ma la migrazione locale non è stata salvata: esporta subito un backup JSON." };
+      }
+    }
+    return { state, warning: "" };
   } catch (_) {
     return { state: emptyState(), warning: "Non riesco a leggere lo stato locale. Esporta un backup appena possibile." };
   }
@@ -93,25 +163,62 @@ export function toggleFavorite(state, playerId) {
   return next;
 }
 
-export function markBought(state, playerId, price) {
+function nextTeamId(teams) {
+  let index = 1;
+  const ids = new Set(teams.map(({ id }) => id));
+  while (ids.has(`avversaria-${index}`)) index += 1;
+  return `avversaria-${index}`;
+}
+
+export function addTeam(state, name) {
   const next = normalizeState(state);
-  next.asta.miei = next.asta.miei.filter(({ player_id: id }) => id !== playerId);
-  next.asta.miei.push({ player_id: playerId, prezzo_pagato: price });
-  next.asta.presi = next.asta.presi.filter((id) => id !== playerId);
+  if (next.squadre.length >= MAX_OPPONENT_TEAMS) throw new Error(`Puoi configurare al massimo ${MAX_OPPONENT_TEAMS} squadre avversarie.`);
+  next.squadre.push({ id: nextTeamId(next.squadre), nome: typeof name === "string" ? name.trim() : "" });
+  return normalizeState(next);
+}
+
+export function renameTeam(state, teamId, name) {
+  const next = normalizeState(state);
+  const team = next.squadre.find(({ id }) => id === teamId);
+  if (!team) throw new Error("Squadra avversaria non trovata.");
+  if (next.assegnazioni.some(({ squadra_id: id }) => id === teamId)) {
+    throw new Error("Non puoi modificare una squadra che ha già dei giocatori assegnati.");
+  }
+  team.nome = typeof name === "string" ? name.trim() : "";
+  return normalizeState(next);
+}
+
+export function deleteTeam(state, teamId) {
+  const next = normalizeState(state);
+  if (!next.squadre.some(({ id }) => id === teamId)) throw new Error("Squadra avversaria non trovata.");
+  if (next.assegnazioni.some(({ squadra_id: id }) => id === teamId)) {
+    throw new Error("Non puoi eliminare una squadra che ha già dei giocatori assegnati.");
+  }
+  next.squadre = next.squadre.filter(({ id }) => id !== teamId);
   return next;
 }
 
-export function markTaken(state, playerId) {
+export function assignPlayer(state, playerId, teamId, price = null) {
   const next = normalizeState(state);
-  next.asta.miei = next.asta.miei.filter(({ player_id: id }) => id !== playerId);
-  if (!next.asta.presi.includes(playerId)) next.asta.presi.push(playerId);
-  return next;
+  const cleanPlayerId = typeof playerId === "string" ? playerId.trim() : "";
+  if (!cleanPlayerId) throw new Error("Ogni assegnazione deve indicare un giocatore valido.");
+  const cleanTeamId = teamId === null ? null : typeof teamId === "string" ? teamId.trim() : "";
+  next.assegnazioni = next.assegnazioni.filter(({ player_id: id }) => id !== cleanPlayerId);
+  next.assegnazioni.push({ player_id: cleanPlayerId, squadra_id: cleanTeamId, prezzo_pagato: price });
+  return normalizeState(next);
+}
+
+export function markBought(state, playerId, price) {
+  return assignPlayer(state, playerId, MY_TEAM_ID, price);
+}
+
+export function markTaken(state, playerId, teamId = null, price = null) {
+  return assignPlayer(state, playerId, teamId, price);
 }
 
 export function cancelAuctionStatus(state, playerId) {
   const next = normalizeState(state);
-  next.asta.miei = next.asta.miei.filter(({ player_id: id }) => id !== playerId);
-  next.asta.presi = next.asta.presi.filter((id) => id !== playerId);
+  next.assegnazioni = next.assegnazioni.filter(({ player_id: id }) => id !== playerId);
   return next;
 }
 
@@ -119,12 +226,21 @@ export function setHideTaken(state, hidden) {
   return { ...normalizeState(state), nascondi_gia_presi: Boolean(hidden) };
 }
 
+export function assignmentFor(state, playerId) {
+  return normalizeState(state).assegnazioni.find(({ player_id: id }) => id === playerId) || null;
+}
+
+export function myPurchases(state) {
+  return normalizeState(state).assegnazioni
+    .filter(({ squadra_id: id }) => id === MY_TEAM_ID)
+    .map(({ player_id, prezzo_pagato }) => ({ player_id, prezzo_pagato }));
+}
+
 export function takenPlayerIds(state) {
-  const normalized = normalizeState(state);
-  return new Set([...normalized.asta.presi, ...normalized.asta.miei.map(({ player_id: id }) => id)]);
+  return new Set(normalizeState(state).assegnazioni.map(({ player_id: id }) => id));
 }
 
 export function remainingCredits(state, budget) {
-  const spent = normalizeState(state).asta.miei.reduce((total, { prezzo_pagato: price }) => total + price, 0);
+  const spent = myPurchases(state).reduce((total, { prezzo_pagato: price }) => total + price, 0);
   return Math.max(0, budget - spent);
 }

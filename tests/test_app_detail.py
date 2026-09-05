@@ -10,7 +10,8 @@ class TestSchedaAsta(unittest.TestCase):
         self.db.row_factory = sqlite3.Row
         self.db.execute(
             "CREATE TABLE app_players (player_id TEXT, player_name TEXT, team_name TEXT, role TEXT, "
-            "fvm REAL, fvm_parametrized REAL, fvm_budget INTEGER, average_auction_price REAL, "
+            "fvm REAL, fvm_parametrized REAL, fvm_budget INTEGER, fvm_percentile REAL, fvm_tier TEXT, "
+            "average_auction_price REAL, "
             "auction_teams INTEGER, auction_budget INTEGER, is_pct REAL, age INTEGER, rating REAL, "
             "potential REAL, appearances INTEGER, average_rating REAL, fantasy_average REAL, "
             "fvm_updated_at TEXT, auction_price_updated_at TEXT, is_updated_at TEXT, "
@@ -18,7 +19,7 @@ class TestSchedaAsta(unittest.TestCase):
         )
         self.db.execute(
             "INSERT INTO app_players VALUES "
-            "('p1', 'Lautaro Martinez', 'Inter', 'FWD', 300, 150, 500, 145, 10, 500, 91, "
+            "('p1', 'Lautaro Martinez', 'Inter', 'FWD', 300, 150, 500, 92.5, 'Fascia 1', 145, 10, 500, 91, "
             "29, 88, 90, 34, 6.6, 8.1, '2026-09-01', '2026-09-02', '2026-09-03', "
             "'available', 'available', 'available', 'available', 'quotazioni,statistiche')"
         )
@@ -29,6 +30,8 @@ class TestSchedaAsta(unittest.TestCase):
     def test_dettaglio_espone_tutte_le_sezioni_informative(self):
         row = get_player_detail(self.db, "p1")
         self.assertEqual(row["fvm_parametrized"], 150)
+        self.assertEqual(row["fvm_percentile"], 92.5)
+        self.assertEqual(row["fvm_tier"], "Fascia 1")
         self.assertEqual(row["fantasy_average"], 8.1)
         self.assertEqual(row["potential"], 90)
         self.assertEqual(row["fvm_status"], "available")

@@ -44,6 +44,8 @@ def build_player(row) -> dict:
         "fvm": row["fvm"],
         "fvm_parametrized": row["fvm_parametrized"],
         "fvm_budget": row["fvm_budget"],
+        "fvm_percentile": row["fvm_percentile"],
+        "fvm_tier": row["fvm_tier"],
         "price": row["average_auction_price"],
         "auction_teams": row["auction_teams"],
         "auction_budget": row["auction_budget"],
@@ -73,7 +75,8 @@ def export_players_json(database_path: Path = DATABASE_PATH, config_path: Path =
     with connect_read_only(database_path) as connection:
         rows = connection.execute(
             "SELECT player_id, player_name, first_name, last_name, name_aliases, team_name, role, "
-            "fvm, fvm_parametrized, fvm_budget, average_auction_price, auction_teams, auction_budget, "
+            "fvm, fvm_parametrized, fvm_budget, fvm_percentile, fvm_tier, "
+            "average_auction_price, auction_teams, auction_budget, "
             "is_pct, age, rating, potential, appearances, average_rating, fantasy_average, "
             "fvm_updated_at, auction_price_updated_at, is_updated_at, "
             "fvm_status, auction_price_status, is_status, data_status, source_names "

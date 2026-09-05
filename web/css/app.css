@@ -57,13 +57,14 @@ html, body {
 
 .player-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-4) var(--space-3);
 }
 
 .segmented-control {
-  flex: 1 1 auto;
+  flex: 1 0 100%;
   display: grid;
   grid-template-columns: 1.5fr repeat(4, 1fr);
   gap: 2px;
@@ -96,12 +97,13 @@ html, body {
 
 .player-controls__actions {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 100%;
   gap: var(--space-1);
 }
 
 .filter-button {
-  max-width: 88px;
+  flex: 1 1 0;
+  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   min-height: 40px;
@@ -364,6 +366,13 @@ html, body {
   background: rgba(229, 88, 79, 0.16);
   color: var(--color-danger);
 }
+
+.badge--tier-1 { background: rgba(62, 201, 122, .16); color: var(--color-success); }
+.badge--tier-2 { background: rgba(79, 140, 255, .16); color: var(--color-accent-text); }
+.badge--tier-3 { background: rgba(230, 180, 72, .16); color: var(--color-warning); }
+.badge--tier-4,
+.badge--tier-5,
+.badge--tier-missing { background: rgba(154, 161, 173, .16); color: var(--color-text-muted); }
 
 .list-sentinel {
   height: 1px;
@@ -632,8 +641,20 @@ html, body {
   background: var(--color-surface-raised);
 }
 
+.auction-summary__copy {
+  display: grid;
+  gap: var(--space-1);
+}
+
 .auction-summary__label {
   color: var(--color-text-muted);
+}
+
+.auction-summary__sub,
+.roster-role__budget,
+.team-row__status {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .auction-summary__value {
@@ -667,6 +688,8 @@ html, body {
 }
 
 .roster,
+.opponents-section,
+.teams-section,
 .backup-section {
   margin-top: var(--space-6);
 }
@@ -693,6 +716,45 @@ html, body {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   line-height: 1.45;
+}
+
+.roster-role__budget {
+  margin: var(--space-1) 0 0;
+}
+
+.opponent-group {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.team-form,
+.team-row {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.team-form {
+  grid-template-columns: 1fr auto;
+  margin-top: var(--space-3);
+}
+
+.team-row {
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.team-row__status {
+  grid-column: 1 / -1;
+}
+
+.team-row .action-button:disabled,
+.team-row .auction-price-input:disabled,
+.team-form .action-button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
 .roster-player {

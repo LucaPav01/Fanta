@@ -264,6 +264,77 @@ class TestSchemaENormalizzazione(unittest.TestCase):
         self.assertEqual(len(affected), 200)
         self.assertTrue(all("2025/2026" not in r["nome_clean"] for r in affected))
 
+    def _insert_player_con_fvm(self, player_id, ruolo, fvm):
+        self.db.execute(
+            "INSERT INTO players(player_id, canonical_full_name, canonical_last_name, current_team_id) "
+            "VALUES (?, ?, ?, 't1')",
+            (player_id, player_id, player_id),
+        )
+        source_id = f"sr-{player_id}"
+        self.db.execute(
+            "INSERT INTO player_source_records "
+            "(source_record_id, batch_id, source_name, source_file, source_row_number, raw_data, raw_hash) "
+            "VALUES (?, ?, 'fantacalcio-it-quotazioni', 'source', 1, '{}', ?)",
+            (source_id, f"b-{player_id}", f"hash-{player_id}"),
+        )
+        self.db.execute(
+            "INSERT INTO fantacalcio_it_quotations "
+            "(quotation_id, player_id, source_record_id, role_classic, fvm_classic_1000, valid_from) "
+            "VALUES (?, ?, ?, ?, ?, '2026-2027')",
+            (f"fq-{player_id}", player_id, source_id, ruolo, fvm),
+        )
+
+    def _setup_fasce_fixture(self):
+        self.db.execute("INSERT INTO teams(team_id, canonical_name) VALUES ('t1', 'Roma')")
+        self.db.execute(
+            "INSERT INTO competition_teams(season, competition_name, team_id) VALUES ('2026-2027', 'Serie A', 't1')"
+        )
+        self.db.executemany(
+            "INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?)",
+            [("auction_teams", "10"), ("auction_budget", "500")],
+        )
+
+    def test_fascia_fvm_e_percentile_calcolati_per_ruolo_con_parita(self):
+        self._setup_fasce_fixture()
+        # Due giocatori FWD a pari FVM devono ricevere lo stesso percentile/fascia,
+        # senza che un ordinamento arbitrario li separi.
+        self._insert_player_con_fvm("f1", "FWD", 10)
+        self._insert_player_con_fvm("f2", "FWD", 10)
+        self._insert_player_con_fvm("f3", "FWD", 50)
+        self._insert_player_con_fvm("f4", "FWD", 90)
+        # Un DEF con lo stesso FVM di un FWD non deve condividerne la fascia:
+        # il confronto e' sempre relativo al proprio ruolo.
+        self._insert_player_con_fvm("d1", "DEF", 90)
+
+        rows = {
+            player_id: (percentile, tier)
+            for player_id, percentile, tier in self.db.execute(
+                "SELECT player_id, fvm_percentile, fvm_tier FROM app_players"
+            )
+        }
+
+        self.assertEqual(rows["f1"], rows["f2"])
+        self.assertEqual(rows["f1"][0], 0.0)
+        self.assertEqual(rows["f1"][1], "Fascia 5")
+        self.assertEqual(rows["f4"][0], 100.0)
+        self.assertEqual(rows["f4"][1], "Fascia 1")
+        # d1 e f4 hanno lo stesso FVM ma appartengono a pool di ruolo diversi: d1 e'
+        # l'unico DEF del fixture, quindi il suo percentile e' relativo a un pool di
+        # un solo elemento (0.0 per definizione), non al pool FWD di f4.
+        self.assertEqual(rows["d1"], (0.0, "Fascia 5"))
+        self.assertNotEqual(rows["d1"], rows["f4"])
+
+    def test_fascia_fvm_e_null_quando_il_fvm_manca(self):
+        self._setup_fasce_fixture()
+        self.db.execute(
+            "INSERT INTO players(player_id, canonical_full_name, canonical_last_name, current_team_id) "
+            "VALUES ('p1', 'Mario Rossi', 'Rossi', 't1')"
+        )
+        row = self.db.execute(
+            "SELECT fvm_percentile, fvm_tier FROM app_players WHERE player_id = 'p1'"
+        ).fetchone()
+        self.assertEqual(row, (None, None))
+
     def test_etichetta_nuovo_non_diventa_parte_del_nome(self):
         affected = [r for r in self.rows if r["nome_raw"].endswith("Nuovo")]
         self.assertEqual(len(affected), 114)

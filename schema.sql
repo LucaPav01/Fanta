@@ -346,6 +346,18 @@ WITH latest_auction AS (
     LEFT JOIN latest_quotation lq ON lq.player_id = p.player_id
     LEFT JOIN latest_statistics lst ON lst.player_id = p.player_id
     LEFT JOIN latest_snapshot ls ON ls.player_id = p.player_id
+), fvm_tiers AS (
+    -- Percentile del FVM tra i soli giocatori con ruolo e FVM noti, calcolato
+    -- separatamente per ruolo (un FWD non va confrontato con un GK). PERCENT_RANK
+    -- assegna lo stesso percentile a valori di FVM pari (parità), a differenza di
+    -- RANK/ROW_NUMBER che li spezzerebbe arbitrariamente.
+    SELECT rr.player_id,
+           ROUND(PERCENT_RANK() OVER (
+               PARTITION BY rr.role ORDER BY fq.fvm_classic_1000
+           ) * 100, 1) AS fvm_percentile
+    FROM resolved_role rr
+    JOIN latest_quotation fq ON fq.player_id = rr.player_id
+    WHERE rr.role IS NOT NULL AND fq.fvm_classic_1000 IS NOT NULL
 )
 SELECT
     p.player_id,
@@ -361,6 +373,13 @@ SELECT
     CASE WHEN fq.fvm_classic_1000 IS NULL THEN NULL
          ELSE fq.fvm_classic_1000 * af.budget_bucket / 1000.0 END AS fvm_parametrized,
     af.budget_bucket AS fvm_budget,
+    ft.fvm_percentile,
+    CASE WHEN ft.fvm_percentile IS NULL THEN NULL
+         WHEN ft.fvm_percentile >= 80 THEN 'Fascia 1'
+         WHEN ft.fvm_percentile >= 60 THEN 'Fascia 2'
+         WHEN ft.fvm_percentile >= 40 THEN 'Fascia 3'
+         WHEN ft.fvm_percentile >= 20 THEN 'Fascia 4'
+         ELSE 'Fascia 5' END AS fvm_tier,
     ae.average_price AS average_auction_price,
     af.teams_bucket AS auction_teams,
     af.budget_bucket AS auction_budget,
@@ -402,6 +421,7 @@ LEFT JOIN latest_statistics fs ON fs.player_id = p.player_id
 LEFT JOIN alias_summary a ON a.player_id = p.player_id
 LEFT JOIN source_summary s ON s.player_id = p.player_id
 LEFT JOIN resolved_role rr ON rr.player_id = p.player_id
+LEFT JOIN fvm_tiers ft ON ft.player_id = p.player_id
 LEFT JOIN data_sources qs ON qs.source_name = 'fantacalcio-it-quotazioni'
 LEFT JOIN data_sources aps ON aps.source_name = 'fantacalcio-online-csv'
 LEFT JOIN data_sources iss ON iss.source_name = 'fantacalcio-online-excel';

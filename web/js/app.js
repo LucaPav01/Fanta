@@ -1,20 +1,22 @@
 import { buildSearchIndex, closestLastNames, searchPlayers } from "./search.js";
-import { cancelAuctionStatus, loadState, markBought, markTaken, parseState, remainingCredits, saveState, serializeState, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
+import { MAX_OPPONENT_TEAMS, MY_TEAM_ID, addTeam, assignmentFor, cancelAuctionStatus, deleteTeam, loadState, markBought, markTaken, myPurchases, parseState, remainingCredits, renameTeam, saveState, serializeState, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
 import { createPlayerCard, openOptionsSheet, openPlayerDetail, roleLabel } from "./ui.js";
 
 const ROUTES = ["giocatori", "preferiti", "asta"];
 const DEFAULT_AUCTION = { budget: 500, squad_composition: { GK: 3, DEF: 8, MID: 8, FWD: 6 } };
 const ROLE_ORDER = ["GK", "DEF", "MID", "FWD"];
 const SORT_OPTIONS = [{ value: "fvm", label: "FVM" }, { value: "price", label: "Prezzo medio" }, { value: "is", label: "IS" }, { value: "name", label: "Nome" }, { value: "team", label: "Squadra" }];
+const TIER_OPTIONS = [1, 2, 3, 4, 5].map((tier) => ({ value: `Fascia ${tier}`, label: `Fascia ${tier}` }));
 const view = document.getElementById("view");
 const searchInput = document.getElementById("player-search");
 const playerControls = document.getElementById("player-controls");
 const roleFilter = document.getElementById("role-filter");
 const teamButton = document.getElementById("team-filter-button");
+const tierButton = document.getElementById("tier-filter-button");
 const sortButton = document.getElementById("sort-button");
 const tabButtons = [...document.querySelectorAll(".tab-bar__item")];
 const restored = loadState();
-const state = { players: [], searchIndex: [], team: "", role: "", query: "", sort: "fvm", auction: DEFAULT_AUCTION, generatedAt: "", local: restored.state, persistenceWarning: restored.warning, backupMessage: "" };
+const state = { players: [], searchIndex: [], team: "", role: "", tier: "", query: "", sort: "fvm", auction: DEFAULT_AUCTION, generatedAt: "", local: restored.state, persistenceWarning: restored.warning, backupMessage: "" };
 let observer;
 
 function element(tag, className, text) {
@@ -38,6 +40,7 @@ function route() {
   return ROUTES.includes(hash) ? hash : "giocatori";
 }
 function number(value) { return value === null || value === undefined ? -Infinity : Number(value); }
+function percent(value, total) { return total ? Math.round((value / total) * 100) : 0; }
 function sortPlayers(players) {
   const collator = new Intl.Collator("it", { sensitivity: "base" });
   return [...players].sort((a, b) => {
@@ -49,8 +52,11 @@ function sortPlayers(players) {
 }
 function favoriteIds() { return new Set(state.local.preferiti); }
 function statusFor(playerId) {
-  const mine = state.local.asta.miei.find(({ player_id }) => player_id === playerId);
-  return { mine, taken: Boolean(mine || state.local.asta.presi.includes(playerId)) };
+  const assignment = assignmentFor(state.local, playerId);
+  const mine = assignment?.squadra_id === MY_TEAM_ID
+    ? { player_id: assignment.player_id, prezzo_pagato: assignment.prezzo_pagato }
+    : null;
+  return { mine, assignment, taken: Boolean(assignment) };
 }
 function filteredPlayers({ favoritesOnly = false, hideTaken = false } = {}) {
   const favorites = favoriteIds();
@@ -58,6 +64,7 @@ function filteredPlayers({ favoritesOnly = false, hideTaken = false } = {}) {
   return sortPlayers(searchPlayers(state.searchIndex, state.query).filter((player) =>
     (!state.role || player.role === state.role)
     && (!state.team || player.team === state.team)
+    && (!state.tier || player.fvm_tier === state.tier)
     && (!favoritesOnly || favorites.has(player.id))
     && (!hideTaken || !taken.has(player.id)),
   ));
@@ -68,13 +75,17 @@ function persist(next) {
   state.persistenceWarning = saved.warning;
 }
 function validateAuctionState(next) {
-  const spent = next.asta.miei.reduce((total, { prezzo_pagato }) => total + prezzo_pagato, 0);
+  const purchases = myPurchases(next);
+  const spent = purchases.reduce((total, { prezzo_pagato }) => total + prezzo_pagato, 0);
   if (spent > state.auction.budget) throw new Error("Il backup supera i " + state.auction.budget + " crediti disponibili.");
   const playersById = new Map(state.players.map((player) => [player.id, player]));
   const counts = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
-  next.asta.miei.forEach(({ player_id }) => {
+  next.assegnazioni.forEach(({ player_id }) => {
     const player = playersById.get(player_id);
     if (!player) throw new Error("Il backup contiene un giocatore che non è presente nel dataset attuale.");
+  });
+  purchases.forEach(({ player_id }) => {
+    const player = playersById.get(player_id);
     counts[player.role] += 1;
   });
   ROLE_ORDER.forEach((role) => {
@@ -95,7 +106,7 @@ function openDetail(player) {
     onMarkBought: (picked, price) => {
       const oldPrice = statusFor(picked.id).mine?.prezzo_pagato || 0;
       const available = remainingCredits(state.local, state.auction.budget) + oldPrice;
-      const teammates = state.local.asta.miei.filter(({ player_id }) => player_id !== picked.id)
+      const teammates = myPurchases(state.local).filter(({ player_id }) => player_id !== picked.id)
         .map(({ player_id }) => state.players.find(({ id }) => id === player_id))
         .filter((teammate) => teammate?.role === picked.role);
       if (!Number.isInteger(price) || price < 1) return "Inserisci un prezzo intero maggiore di zero.";
@@ -103,7 +114,17 @@ function openDetail(player) {
       if (teammates.length >= (state.auction.squad_composition[picked.role] || 0)) return `Hai già riempito gli slot per il ruolo ${roleLabel(picked.role)}.`;
       persist(markBought(state.local, picked.id, price)); renderCurrent(); return true;
     },
-    onMarkTaken: (picked) => { persist(markTaken(state.local, picked.id)); renderCurrent(); return true; },
+    onMarkTaken: (picked, price) => {
+      if (!Number.isInteger(price) || price < 1) return "Inserisci il prezzo intero pagato dalla squadra avversaria.";
+      if (!state.local.squadre.length) return "Aggiungi prima una squadra avversaria nella sezione Asta.";
+      openOptionsSheet({
+        title: "A quale squadra è stato assegnato?",
+        selected: statusFor(picked.id).assignment?.squadra_id,
+        options: state.local.squadre.map(({ id, nome }) => ({ value: id, label: nome })),
+        onSelect: (teamId) => { persist(markTaken(state.local, picked.id, teamId, price)); renderCurrent(); },
+      });
+      return true;
+    },
     onCancelAuction: (picked) => { persist(cancelAuctionStatus(state.local, picked.id)); renderCurrent(); return true; },
   });
 }
@@ -115,6 +136,8 @@ function updateControls() {
   });
   teamButton.classList.toggle("is-active", Boolean(state.team));
   teamButton.textContent = state.team || "Squadra";
+  tierButton.classList.toggle("is-active", Boolean(state.tier));
+  tierButton.textContent = state.tier || "Fascia FVM";
   const selected = SORT_OPTIONS.find(({ value }) => value === state.sort);
   sortButton.textContent = selected.label;
 }
@@ -128,6 +151,7 @@ function chip(label, handler) {
 function renderChips(parent) {
   if (state.role) parent.append(chip(`Ruolo ${roleLabel(state.role)}`, () => { state.role = ""; renderPlayers(); }));
   if (state.team) parent.append(chip(state.team, () => { state.team = ""; renderPlayers(); }));
+  if (state.tier) parent.append(chip(state.tier, () => { state.tier = ""; renderPlayers(); }));
   if (state.query) parent.append(chip(`“${state.query}”`, () => { state.query = ""; searchInput.value = ""; renderPlayers(); }));
 }
 function renderEmpty(parent, { title = "Nessun giocatore trovato", text = "", suggestions = false } = {}) {
@@ -196,15 +220,18 @@ function renderAuction() {
   if (observer) observer.disconnect();
   const content = element("section", "auction-view");
   const remaining = remainingCredits(state.local, state.auction.budget);
+  const spent = state.auction.budget - remaining;
   const summary = element("section", "auction-summary");
-  summary.append(element("span", "auction-summary__label", "Crediti residui"), element("strong", "auction-summary__value", `${remaining} / ${state.auction.budget}`));
+  const summaryCopy = element("div", "auction-summary__copy");
+  summaryCopy.append(element("span", "auction-summary__label", "Crediti residui"), element("span", "auction-summary__sub", `${spent} cr spesi · ${percent(spent, state.auction.budget)}% del budget`));
+  summary.append(summaryCopy, element("strong", "auction-summary__value", `${remaining} / ${state.auction.budget}`));
   content.append(summary);
   if (state.backupMessage) {
     content.append(element("p", "backup-feedback", state.backupMessage));
     state.backupMessage = "";
   }
   if (state.persistenceWarning) content.append(element("p", "backup-warning", state.persistenceWarning));
-  if (state.local.asta.miei.length || state.local.asta.presi.length) {
+  if (state.local.assegnazioni.length) {
     content.append(element("aside", "backup-callout", "Asta in corso: Safari può eliminare lo stato locale dopo un periodo di inattività. Salva ora un backup JSON qui sotto."));
   }
   const hideTaken = element("label", "taken-toggle");
@@ -213,13 +240,15 @@ function renderAuction() {
   checkbox.addEventListener("change", () => { persist(setHideTaken(state.local, checkbox.checked)); renderAuction(); });
   hideTaken.append(checkbox, document.createTextNode(" Nascondi già presi nella lista Giocatori")); content.append(hideTaken);
   const playersById = new Map(state.players.map((player) => [player.id, player]));
+  const teamById = new Map(state.local.squadre.map((team) => [team.id, team]));
   const roster = element("section", "roster");
   roster.append(element("h2", "section-title", "La mia rosa"));
   ROLE_ORDER.forEach((role) => {
-    const purchases = state.local.asta.miei.map((purchase) => ({ ...purchase, player: playersById.get(purchase.player_id) })).filter(({ player }) => player?.role === role);
+    const purchases = myPurchases(state.local).map((purchase) => ({ ...purchase, player: playersById.get(purchase.player_id) })).filter(({ player }) => player?.role === role);
     const slots = state.auction.squad_composition[role] || 0;
+    const roleSpent = purchases.reduce((total, { prezzo_pagato }) => total + prezzo_pagato, 0);
     const section = element("section", "roster-role");
-    section.append(element("h3", "roster-role__title", `${roleLabel(role)} · ${purchases.length}/${slots} · ${Math.max(0, slots - purchases.length)} liberi`));
+    section.append(element("h3", "roster-role__title", `${roleLabel(role)} · ${purchases.length}/${slots} · ${Math.max(0, slots - purchases.length)} liberi`), element("p", "roster-role__budget", `${roleSpent} cr · ${percent(roleSpent, state.auction.budget)}% del budget`));
     if (!purchases.length) section.append(element("p", "roster-role__empty", "Nessun giocatore acquistato."));
     purchases.forEach(({ player, prezzo_pagato }) => {
       const row = element("button", "roster-player"); row.type = "button";
@@ -229,6 +258,55 @@ function renderAuction() {
     roster.append(section);
   });
   content.append(roster);
+  const opponents = element("section", "opponents-section");
+  opponents.append(element("h2", "section-title", "Acquisti avversari"));
+  const opponentGroups = new Map();
+  state.local.assegnazioni.filter(({ squadra_id }) => squadra_id !== MY_TEAM_ID).forEach((assignment) => {
+    const groupId = assignment.squadra_id || "non-assegnata";
+    if (!opponentGroups.has(groupId)) opponentGroups.set(groupId, []);
+    opponentGroups.get(groupId).push({ ...assignment, player: playersById.get(assignment.player_id) });
+  });
+  if (!opponentGroups.size) opponents.append(element("p", "roster-role__empty", "Nessun acquisto avversario registrato."));
+  opponentGroups.forEach((purchases, teamId) => {
+    const name = teamId === "non-assegnata" ? "Squadra da definire" : teamById.get(teamId)?.nome || "Squadra non disponibile";
+    const total = purchases.reduce((sum, { prezzo_pagato }) => sum + (prezzo_pagato || 0), 0);
+    const group = element("section", "opponent-group");
+    group.append(element("h3", "roster-role__title", name), element("p", "roster-role__budget", `${purchases.length} ${purchases.length === 1 ? "acquisto" : "acquisti"} · ${total ? `${total} cr` : "prezzo non disponibile"}`));
+    purchases.filter(({ player }) => player).forEach(({ player, prezzo_pagato }) => {
+      const row = element("button", "roster-player"); row.type = "button";
+      row.append(element("span", "roster-player__name", `${player.name} · ${player.team}`), element("strong", "roster-player__price", prezzo_pagato ? `${prezzo_pagato} cr` : "—"));
+      row.addEventListener("click", () => openDetail(player)); group.append(row);
+    });
+    opponents.append(group);
+  });
+  content.append(opponents);
+  const teams = element("section", "teams-section");
+  teams.append(element("h2", "section-title", "Squadre avversarie"), element("p", "backup-section__copy", `Configura fino a ${MAX_OPPONENT_TEAMS} squadre. Dopo il primo acquisto, il nome resta bloccato.`));
+  const teamForm = element("form", "team-form");
+  const teamName = document.createElement("input");
+  teamName.className = "auction-price-input"; teamName.type = "text"; teamName.maxLength = 48; teamName.placeholder = "Nome squadra"; teamName.setAttribute("aria-label", "Nome nuova squadra avversaria");
+  const addButton = element("button", "action-button", "Aggiungi"); addButton.type = "submit"; addButton.disabled = state.local.squadre.length >= MAX_OPPONENT_TEAMS;
+  teamForm.append(teamName, addButton);
+  const teamFeedback = element("p", "auction-action-error");
+  teamForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    try { persist(addTeam(state.local, teamName.value)); renderAuction(); }
+    catch (error) { teamFeedback.textContent = error.message || "Non riesco ad aggiungere la squadra."; }
+  });
+  teams.append(teamForm, teamFeedback);
+  state.local.squadre.forEach((team) => {
+    const assigned = state.local.assegnazioni.filter(({ squadra_id }) => squadra_id === team.id).length;
+    const row = element("form", "team-row");
+    const nameInput = document.createElement("input");
+    nameInput.className = "auction-price-input"; nameInput.type = "text"; nameInput.maxLength = 48; nameInput.value = team.nome; nameInput.disabled = assigned > 0; nameInput.setAttribute("aria-label", `Nome ${team.nome}`);
+    const saveButton = element("button", "action-button", "Salva"); saveButton.type = "submit"; saveButton.disabled = assigned > 0;
+    const removeButton = element("button", "action-button action-button--quiet", "Elimina"); removeButton.type = "button"; removeButton.disabled = assigned > 0;
+    row.append(nameInput, saveButton, removeButton, element("span", "team-row__status", assigned ? `${assigned} ${assigned === 1 ? "acquisto: nome bloccato" : "acquisti: nome bloccato"}` : "Nessun acquisto"));
+    row.addEventListener("submit", (event) => { event.preventDefault(); try { persist(renameTeam(state.local, team.id, nameInput.value)); renderAuction(); } catch (error) { teamFeedback.textContent = error.message || "Non riesco a rinominare la squadra."; } });
+    removeButton.addEventListener("click", () => { try { persist(deleteTeam(state.local, team.id)); renderAuction(); } catch (error) { teamFeedback.textContent = error.message || "Non riesco a eliminare la squadra."; } });
+    teams.append(row);
+  });
+  content.append(teams);
   const backup = element("section", "backup-section");
   backup.append(element("h2", "section-title", "Backup manuale"), element("p", "backup-section__copy", "Esporta lo stato in JSON, copialo e conservalo. Per ripristinare, incolla un backup valido nello stesso spazio."));
   const textarea = document.createElement("textarea");
@@ -264,6 +342,9 @@ function openTeamPicker() {
   const teams = [...new Set(state.players.map(({ team }) => team))].sort(new Intl.Collator("it", { sensitivity: "base" }).compare);
   openOptionsSheet({ title: "Squadra", selected: state.team, options: [{ value: "", label: "Tutte le squadre" }, ...teams.map((team) => ({ value: team, label: team }))], onSelect: (team) => { state.team = team; renderPlayers(); } });
 }
+function openTierPicker() {
+  openOptionsSheet({ title: "Fascia FVM", selected: state.tier, options: [{ value: "", label: "Tutte le fasce" }, ...TIER_OPTIONS], onSelect: (tier) => { state.tier = tier; renderPlayers(); } });
+}
 function openSortPicker() { openOptionsSheet({ title: "Ordina per", options: SORT_OPTIONS, selected: state.sort, onSelect: (sort) => { state.sort = sort; renderPlayers(); } }); }
 async function loadPlayers() {
   try {
@@ -279,7 +360,7 @@ async function loadPlayers() {
 }
 roleFilter.addEventListener("click", (event) => { const button = event.target.closest("button[data-role]"); if (button) { state.role = button.dataset.role; renderPlayers(); } });
 searchInput.addEventListener("input", () => { state.query = searchInput.value; renderPlayers(); });
-teamButton.addEventListener("click", openTeamPicker); sortButton.addEventListener("click", openSortPicker);
+teamButton.addEventListener("click", openTeamPicker); tierButton.addEventListener("click", openTierPicker); sortButton.addEventListener("click", openSortPicker);
 tabButtons.forEach((button) => button.addEventListener("click", () => navigate(button.dataset.route)));
 window.addEventListener("hashchange", () => mount(route()));
 if (!location.hash) location.hash = "/giocatori";

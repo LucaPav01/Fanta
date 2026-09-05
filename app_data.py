@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 from urllib.parse import urlencode
 
 
@@ -56,12 +58,16 @@ class FilterState:
         return params
 
 
-def connect_read_only(database_path: Path) -> sqlite3.Connection:
+@contextmanager
+def connect_read_only(database_path: Path) -> Iterator[sqlite3.Connection]:
     """Apre il database senza consentire scritture accidentali dalla UI."""
     connection = sqlite3.connect(f"file:{database_path.resolve()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     connection.create_function("app_normalize", 1, lambda value: normalize_name(value or ""))
-    return connection
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def available_filters(connection: sqlite3.Connection) -> tuple[list[str], list[str]]:
@@ -107,6 +113,7 @@ def get_player_detail(connection: sqlite3.Connection, player_id: str) -> sqlite3
     """Restituisce il contratto completo usato dalla scheda asta."""
     return connection.execute(
         "SELECT player_id, player_name, team_name, role, fvm, fvm_parametrized, fvm_budget, "
+        "fvm_percentile, fvm_tier, "
         "average_auction_price, auction_teams, auction_budget, is_pct, age, rating, potential, "
         "appearances, average_rating, fantasy_average, fvm_updated_at, auction_price_updated_at, "
         "is_updated_at, fvm_status, auction_price_status, is_status, data_status, source_names "

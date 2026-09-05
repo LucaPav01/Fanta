@@ -29,6 +29,7 @@ class TestExportWebData(unittest.TestCase):
         )
 
         required_json_fields = ("id", "name", "team", "role", "search_blob")
+        allowed_tiers = {"Fascia 1", "Fascia 2", "Fascia 3", "Fascia 4", "Fascia 5"}
         for player in payload["players"]:
             for field in required_json_fields:
                 self.assertIsNotNone(player.get(field), f"{field} nullo per {player.get('id')}")
@@ -38,6 +39,15 @@ class TestExportWebData(unittest.TestCase):
             self.assertIn("fvm_updated_at", player)
             self.assertIn("price_updated_at", player)
             self.assertIn("is_updated_at", player)
+            self.assertIn("fvm_percentile", player)
+            self.assertIn("fvm_tier", player)
+            if player["fvm"] is None:
+                self.assertIsNone(player["fvm_percentile"])
+                self.assertIsNone(player["fvm_tier"])
+            else:
+                self.assertIn(player["fvm_tier"], allowed_tiers)
+                self.assertGreaterEqual(player["fvm_percentile"], 0)
+                self.assertLessEqual(player["fvm_percentile"], 100)
 
     def test_esportazione_solleva_errore_se_un_campo_obbligatorio_e_nullo(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -49,6 +59,7 @@ class TestExportWebData(unittest.TestCase):
             columns = [
                 "player_id", "player_name", "first_name", "last_name", "name_aliases",
                 "team_name", "role", "fvm", "fvm_parametrized", "fvm_budget",
+                "fvm_percentile", "fvm_tier",
                 "average_auction_price", "auction_teams", "auction_budget", "is_pct",
                 "age", "rating", "potential", "appearances", "average_rating",
                 "fantasy_average", "fvm_status", "auction_price_status", "is_status",
