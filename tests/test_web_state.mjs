@@ -8,8 +8,10 @@ import {
   STATE_V1_BACKUP_STORAGE_KEY,
   addTeam,
   assignPlayer,
+  decodeStateFromLink,
   deleteTeam,
   emptyState,
+  encodeStateForLink,
   loadState,
   markBought,
   markTaken,
@@ -21,6 +23,8 @@ import {
   takenPlayerIds,
   toggleFavorite,
 } from "../web/js/state.js";
+
+const SNAPSHOT_KEYS = ["fanta_state_snap_0", "fanta_state_snap_1", "fanta_state_snap_2"];
 
 function storage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -98,10 +102,66 @@ test("non si possono configurare più di nove squadre avversarie", () => {
   assert.throws(() => addTeam(state, "Squadra 10"), /al massimo 9/);
 });
 
+test("ogni salvataggio scrive uno snapshot rotativo su tre slot", () => {
+  const localStorage = storage();
+  let state = markBought(emptyState(), "p1", 10);
+  saveState(state, localStorage);
+  state = markBought(state, "p2", 20);
+  saveState(state, localStorage);
+  state = markBought(state, "p3", 30);
+  saveState(state, localStorage);
+  state = markBought(state, "p4", 40);
+  saveState(state, localStorage);
+
+  const filled = SNAPSHOT_KEYS.filter((key) => localStorage.getItem(key));
+  assert.equal(filled.length, 3);
+  const latest = SNAPSHOT_KEYS
+    .map((key) => JSON.parse(localStorage.getItem(key)))
+    .sort((a, b) => b.timestamp - a.timestamp)[0];
+  assert.deepEqual(JSON.parse(latest.data).assegnazioni.map(({ player_id }) => player_id).sort(), ["p1", "p2", "p3", "p4"]);
+});
+
+test("se lo stato principale è corrotto, il caricamento recupera dallo snapshot più recente", () => {
+  const localStorage = storage();
+  let state = markBought(emptyState(), "p1", 15);
+  saveState(state, localStorage);
+  state = toggleFavorite(state, "p9");
+  saveState(state, localStorage);
+
+  localStorage.setItem(STATE_STORAGE_KEY, "{rotto");
+  const { state: recovered, warning } = loadState(localStorage);
+  assert.match(warning, /copia di sicurezza/);
+  assert.deepEqual(recovered.preferiti, ["p9"]);
+  assert.deepEqual(recovered.assegnazioni, [{ player_id: "p1", squadra_id: MY_TEAM_ID, prezzo_pagato: 15 }]);
+});
+
+test("se non ci sono snapshot ma esiste un backup v1, il caricamento recupera da quello", () => {
+  const v1 = JSON.stringify({ schema_version: 1, preferiti: ["p5"], asta: { miei: [], presi: [] } });
+  const localStorage = storage({ [STATE_V1_BACKUP_STORAGE_KEY]: v1 });
+  const { state, warning } = loadState(localStorage);
+  assert.match(warning, /backup v1/);
+  assert.deepEqual(state.preferiti, ["p5"]);
+});
+
 test("il backup rifiuta JSON e prezzi non validi", () => {
   assert.throws(() => parseState("{rotto"), /JSON non valido/);
   assert.throws(
     () => parseState('{"schema_version":2,"preferiti":[],"squadre":[],"assegnazioni":[{"player_id":"p1","squadra_id":"mia","prezzo_pagato":0}]}'),
     /intero positivo/,
   );
+});
+
+test("lo stato codificato per il link di ripristino si decodifica nello stesso stato, anche con caratteri accentati", () => {
+  let state = addTeam(emptyState(), "Città Città");
+  state = assignPlayer(state, "p1", state.squadre[0].id, 15);
+  state = toggleFavorite(state, "p2");
+
+  const encoded = encodeStateForLink(state);
+  assert.equal(typeof encoded, "string");
+  const decoded = decodeStateFromLink(encoded);
+  assert.deepEqual(decoded, state);
+});
+
+test("un link di ripristino corrotto viene segnalato", () => {
+  assert.throws(() => decodeStateFromLink("###non-base64###"), /link di ripristino/);
 });

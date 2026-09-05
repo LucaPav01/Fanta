@@ -3,6 +3,11 @@ export const STATE_V1_BACKUP_STORAGE_KEY = "fanta_state_backup_v1";
 export const SCHEMA_VERSION = 2;
 export const MY_TEAM_ID = "mia";
 export const MAX_OPPONENT_TEAMS = 9;
+const SNAPSHOT_KEYS = ["fanta_state_snap_0", "fanta_state_snap_1", "fanta_state_snap_2"];
+const SNAPSHOT_INDEX_KEY = "fanta_state_snap_idx";
+const IDB_NAME = "fanta";
+const IDB_STORE = "state";
+const IDB_KEY = "current";
 
 export function emptyState() {
   return {
@@ -125,31 +130,145 @@ export function parseState(serialized) {
   return normalizeState(value);
 }
 
+export function encodeStateForLink(state) {
+  const json = JSON.stringify(normalizeState(state));
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary);
+}
+
+export function decodeStateFromLink(encoded) {
+  let binary;
+  try {
+    binary = atob(encoded);
+  } catch (_) {
+    throw new Error("Il link di ripristino non è valido.");
+  }
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const json = new TextDecoder().decode(bytes);
+  return parseState(json);
+}
+
+function writeSnapshot(storage, serialized) {
+  try {
+    const current = Number(storage.getItem(SNAPSHOT_INDEX_KEY));
+    const slot = Number.isInteger(current) ? ((current % SNAPSHOT_KEYS.length) + SNAPSHOT_KEYS.length) % SNAPSHOT_KEYS.length : 0;
+    storage.setItem(SNAPSHOT_KEYS[slot], JSON.stringify({ timestamp: Date.now(), data: serialized }));
+    storage.setItem(SNAPSHOT_INDEX_KEY, String(slot + 1));
+  } catch (_) {
+    // il fallimento dello snapshot rotativo non deve mai bloccare il salvataggio principale
+  }
+}
+
+function recoverFromSnapshots(storage) {
+  let best = null;
+  SNAPSHOT_KEYS.forEach((key) => {
+    try {
+      const raw = storage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.timestamp !== "number" || typeof parsed.data !== "string") return;
+      if (!best || parsed.timestamp >= best.timestamp) best = parsed;
+    } catch (_) {
+      // snapshot corrotto: ignoralo e prova il prossimo
+    }
+  });
+  if (!best) return null;
+  try {
+    return normalizeState(JSON.parse(best.data));
+  } catch (_) {
+    return null;
+  }
+}
+
+function recoverFromV1Backup(storage) {
+  try {
+    const backup = storage.getItem(STATE_V1_BACKUP_STORAGE_KEY);
+    if (!backup) return null;
+    return normalizeState(JSON.parse(backup));
+  } catch (_) {
+    return null;
+  }
+}
+
+function recoverState(storage) {
+  const fromSnapshot = recoverFromSnapshots(storage);
+  if (fromSnapshot) return { state: fromSnapshot, warning: "Stato recuperato da una copia di sicurezza locale." };
+  const fromV1 = recoverFromV1Backup(storage);
+  if (fromV1) return { state: fromV1, warning: "Stato recuperato dal backup v1." };
+  return { state: emptyState(), warning: "Non riesco a leggere lo stato locale. Esporta un backup appena possibile." };
+}
+
+function openStateDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") { reject(new Error("IndexedDB non disponibile.")); return; }
+    const request = indexedDB.open(IDB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Apertura IndexedDB fallita."));
+  });
+}
+
+function mirrorToIndexedDB(state) {
+  openStateDb().then((db) => {
+    try {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(state, IDB_KEY);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+    } catch (_) {
+      // il mirror asincrono non deve mai bloccare il salvataggio principale
+    }
+  }).catch(() => {});
+}
+
+export function readFromIndexedDB() {
+  return openStateDb().then((db) => new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const getRequest = tx.objectStore(IDB_STORE).get(IDB_KEY);
+      getRequest.onsuccess = () => { resolve(getRequest.result || null); db.close(); };
+      getRequest.onerror = () => { resolve(null); db.close(); };
+    } catch (_) {
+      resolve(null);
+    }
+  })).catch(() => null);
+}
+
 export function loadState(storage = window.localStorage) {
   try {
     const saved = storage.getItem(STATE_STORAGE_KEY);
-    if (!saved) return { state: emptyState(), warning: "" };
-    const raw = JSON.parse(saved);
-    const isV1 = raw?.schema_version === undefined || raw?.schema_version === 1;
-    const state = normalizeState(raw);
-    if (isV1) {
-      try {
-        if (!storage.getItem(STATE_V1_BACKUP_STORAGE_KEY)) storage.setItem(STATE_V1_BACKUP_STORAGE_KEY, saved);
-        storage.setItem(STATE_STORAGE_KEY, serializeState(state));
-      } catch (_) {
-        return { state, warning: "Stato v1 recuperato, ma la migrazione locale non è stata salvata: esporta subito un backup JSON." };
+    if (saved) {
+      const raw = JSON.parse(saved);
+      const isV1 = raw?.schema_version === undefined || raw?.schema_version === 1;
+      const state = normalizeState(raw);
+      if (isV1) {
+        try {
+          if (!storage.getItem(STATE_V1_BACKUP_STORAGE_KEY)) storage.setItem(STATE_V1_BACKUP_STORAGE_KEY, saved);
+          storage.setItem(STATE_STORAGE_KEY, serializeState(state));
+        } catch (_) {
+          return { state, warning: "Stato v1 recuperato, ma la migrazione locale non è stata salvata: esporta subito un backup JSON." };
+        }
       }
+      return { state, warning: "" };
     }
-    return { state, warning: "" };
   } catch (_) {
-    return { state: emptyState(), warning: "Non riesco a leggere lo stato locale. Esporta un backup appena possibile." };
+    // stato principale illeggibile o corrotto: prova la catena di recupero sotto
   }
+  return recoverState(storage);
 }
 
 export function saveState(state, storage = window.localStorage) {
   const normalized = normalizeState(state);
   try {
-    storage.setItem(STATE_STORAGE_KEY, serializeState(normalized));
+    const serialized = serializeState(normalized);
+    storage.setItem(STATE_STORAGE_KEY, serialized);
+    writeSnapshot(storage, serialized);
+    try { mirrorToIndexedDB(normalized); } catch (_) {}
     return { state: normalized, warning: "" };
   } catch (_) {
     return { state: normalized, warning: "Il salvataggio locale non è disponibile: conserva subito un backup JSON." };

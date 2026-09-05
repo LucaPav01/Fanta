@@ -1,5 +1,5 @@
 import { buildSearchIndex, closestLastNames, searchPlayers } from "./search.js";
-import { MAX_OPPONENT_TEAMS, MY_TEAM_ID, addTeam, assignmentFor, cancelAuctionStatus, deleteTeam, loadState, markBought, markTaken, myPurchases, parseState, remainingCredits, renameTeam, saveState, serializeState, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
+import { MAX_OPPONENT_TEAMS, MY_TEAM_ID, addTeam, assignmentFor, cancelAuctionStatus, decodeStateFromLink, deleteTeam, encodeStateForLink, loadState, markBought, markTaken, myPurchases, normalizeState, parseState, readFromIndexedDB, remainingCredits, renameTeam, saveState, serializeState, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
 import { createPlayerCard, openOptionsSheet, openPlayerDetail, roleLabel } from "./ui.js";
 
 const ROUTES = ["giocatori", "preferiti", "asta"];
@@ -238,6 +238,9 @@ function renderAuction() {
   if (state.local.assegnazioni.length) {
     content.append(element("aside", "backup-callout", "Asta in corso: Safari può eliminare lo stato locale dopo un periodo di inattività. Salva ora un backup JSON qui sotto."));
   }
+  if (state.local.assegnazioni.length && state.local.assegnazioni.length % 5 === 0) {
+    content.append(element("aside", "backup-callout", `Hai registrato ${state.local.assegnazioni.length} assegnazioni: scarica un backup per non rischiare di perderle.`));
+  }
   const hideTaken = element("label", "taken-toggle");
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox"; checkbox.checked = state.local.nascondi_gia_presi;
@@ -312,11 +315,27 @@ function renderAuction() {
   });
   content.append(teams);
   const backup = element("section", "backup-section");
-  backup.append(element("h2", "section-title", "Backup manuale"), element("p", "backup-section__copy", "Esporta lo stato in JSON, copialo e conservalo. Per ripristinare, incolla un backup valido nello stesso spazio."));
+  backup.append(element("h2", "section-title", "Backup"), element("p", "backup-section__copy", "Scarica un file di backup o genera un link di ripristino da salvare fuori dal telefono (nelle Note, in una chat con te stesso). Sopravvivono anche se i dati del sito vengono cancellati."));
+  const fileActions = element("div", "backup-actions");
+  const downloadButton = element("button", "action-button action-button--primary", "Scarica backup"); downloadButton.type = "button";
+  const linkButton = element("button", "action-button", "Copia link di ripristino"); linkButton.type = "button";
+  const fileFeedback = element("p", "backup-feedback");
+  downloadButton.addEventListener("click", () => {
+    try { downloadStateFile(state.local); fileFeedback.textContent = "Backup scaricato."; }
+    catch (error) { fileFeedback.textContent = error.message || "Non riesco a scaricare il backup."; }
+  });
+  linkButton.addEventListener("click", () => {
+    copyRestoreLink(state.local)
+      .then(() => { fileFeedback.textContent = "Link di ripristino copiato negli appunti."; })
+      .catch((error) => { fileFeedback.textContent = error.message || "Non riesco a generare o copiare il link di ripristino."; });
+  });
+  fileActions.append(downloadButton, linkButton);
+  backup.append(fileActions, fileFeedback);
+  backup.append(element("h3", "section-title", "Ripristino manuale"), element("p", "backup-section__copy", "In alternativa esporta lo stato in JSON o incolla un backup valido per ripristinarlo."));
   const textarea = document.createElement("textarea");
   textarea.className = "backup-textarea"; textarea.rows = 8; textarea.spellcheck = false; textarea.placeholder = "Il backup JSON comparirà qui…"; textarea.setAttribute("aria-label", "Backup JSON");
   const actions = element("div", "backup-actions");
-  const exportButton = element("button", "action-button action-button--primary", "Esporta JSON"); exportButton.type = "button";
+  const exportButton = element("button", "action-button", "Esporta JSON"); exportButton.type = "button";
   exportButton.addEventListener("click", () => { textarea.value = serializeState(state.local); textarea.focus(); textarea.select(); });
   const importButton = element("button", "action-button", "Ripristina JSON"); importButton.type = "button";
   const feedback = element("p", "backup-feedback");
@@ -350,6 +369,63 @@ function openTierPicker() {
   openOptionsSheet({ title: "Fascia FVM", selected: state.tier, options: [{ value: "", label: "Tutte le fasce" }, ...tierOptions()], onSelect: (tier) => { state.tier = tier; renderPlayers(); } });
 }
 function openSortPicker() { openOptionsSheet({ title: "Ordina per", options: SORT_OPTIONS, selected: state.sort, onSelect: (sort) => { state.sort = sort; renderPlayers(); } }); }
+function isEmptyLocalState(local) {
+  return !local.preferiti.length && !local.squadre.length && !local.assegnazioni.length;
+}
+function downloadStateFile(local) {
+  const json = serializeState(local);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const link = document.createElement("a");
+  link.href = url; link.download = `fanta-backup-${stamp}.json`;
+  document.body.append(link); link.click(); link.remove();
+  URL.revokeObjectURL(url);
+}
+function copyRestoreLink(local) {
+  let encoded;
+  try { encoded = encodeStateForLink(local); }
+  catch (_) { return Promise.reject(new Error("Non riesco a generare il link di ripristino.")); }
+  const link = `${location.origin}${location.pathname}#restore=${encoded}`;
+  if (!navigator.clipboard?.writeText) return Promise.reject(new Error("La copia negli appunti non è disponibile su questo browser."));
+  return navigator.clipboard.writeText(link);
+}
+function clearRestoreFragment() {
+  history.replaceState(null, "", `${location.pathname}${location.search}#/${route()}`);
+}
+function attemptLinkRestore() {
+  const prefix = "#restore=";
+  if (!location.hash.startsWith(prefix)) return;
+  const encoded = location.hash.slice(prefix.length);
+  let restoredState;
+  try {
+    restoredState = decodeStateFromLink(encoded);
+    validateAuctionState(restoredState);
+  } catch (error) {
+    clearRestoreFragment();
+    state.backupMessage = "Il link di ripristino non è valido: " + (error.message || "");
+    renderCurrent();
+    return;
+  }
+  const confirmed = window.confirm("Ripristinare lo stato da questo link? I dati locali attuali verranno sovrascritti.");
+  clearRestoreFragment();
+  if (!confirmed) return;
+  persist(restoredState);
+  state.backupMessage = "Stato ripristinato dal link.";
+  renderCurrent();
+}
+function attemptIndexedDbRecovery() {
+  if (!isEmptyLocalState(state.local)) return;
+  readFromIndexedDB().then((recovered) => {
+    if (!recovered) return;
+    let normalized;
+    try { normalized = normalizeState(recovered); } catch (_) { return; }
+    if (isEmptyLocalState(normalized)) return;
+    persist(normalized);
+    state.backupMessage = "Stato recuperato dalla copia locale.";
+    renderCurrent();
+  }).catch(() => {});
+}
 async function loadPlayers() {
   try {
     const response = await fetch("data/players.json");
@@ -358,6 +434,7 @@ async function loadPlayers() {
     state.players = payload.players || []; state.generatedAt = payload.generated_at || ""; state.searchIndex = buildSearchIndex(state.players);
     state.auction = { ...DEFAULT_AUCTION, ...(payload.config?.auction || {}), squad_composition: { ...DEFAULT_AUCTION.squad_composition, ...(payload.config?.squad_composition || {}) } };
     mount(route());
+    if (location.hash.startsWith("#restore=")) attemptLinkRestore(); else attemptIndexedDbRecovery();
   } catch (_) {
     view.replaceChildren(element("div", "empty-state", "Impossibile caricare i giocatori. Riprova quando sei connesso."));
   }
