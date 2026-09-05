@@ -255,6 +255,25 @@ def link_source_records(conn, source_name: str, record_ids: dict, player_by_row:
 # ------------------------------------------------------------------
 # Fase 4: arricchimento — auction_prices (CSV) e player_snapshots (Excel-Online)
 # ------------------------------------------------------------------
+def clear_derived_records(conn) -> None:
+    """Ricrea i dati normalizzati dalle fonti immutabili ad ogni pubblicazione.
+
+    Le fusioni d'identità possono cambiare il player_id collegato a una riga
+    sorgente. Cancellare soltanto questi derivati prima di ricostruirli evita
+    che una chiave deterministica rimasta sul vecchio identificativo blocchi
+    una riesecuzione della pipeline. Le sorgenti raw e le identità non vengono
+    mai toccate.
+    """
+    conn.executescript("""
+        DELETE FROM auction_price_estimates;
+        DELETE FROM auction_prices;
+        DELETE FROM player_snapshots;
+        DELETE FROM fantacalcio_it_quotations;
+        DELETE FROM fantacalcio_it_statistics;
+    """)
+    conn.commit()
+
+
 def build_auction_prices(conn, record_ids: dict, player_by_row: dict, team_by_row: dict) -> int:
     with CSV_PATH.open(newline="", encoding="utf-8") as f:
         staged = [normalize_csv_row(row, i + 1) for i, row in enumerate(csv.DictReader(f))]
@@ -903,6 +922,7 @@ def main():
     link_source_records(conn, "fantacalcio-it-quotazioni", quot_it_ids, quot_it_player_by_row, quot_it_team_by_row, review_keys)
 
     print("\n[4/6] Normalizzazione delle quattro fonti")
+    clear_derived_records(conn)
     n_prices = build_auction_prices(conn, csv_ids, csv_player_by_row, csv_team_by_row)
     n_snapshots = build_player_snapshots(conn, excel_online_ids, excel_player_by_row, excel_team_by_row)
     n_fc_stats = build_fc_it_statistics(conn, stat_rows, stat_ids, stat_player_by_row)

@@ -329,11 +329,12 @@ WITH latest_auction AS (
     WHERE player_id IS NOT NULL
     GROUP BY player_id
 ), resolved_role AS (
-    -- Se il ruolo canonico manca, ripiega sulle colonne ruolo_* dello snapshot
-    -- Excel-Online (codici P/D/C/A, T=trequartista trattato come MID).
+    -- Il listone ufficiale Fantacalcio.it è la fonte canonica dei ruoli.
+    -- Statistiche ufficiali e fonti esterne sono soltanto ripieghi per chi
+    -- non è ancora presente nel listone delle quotazioni.
     SELECT p.player_id,
            COALESCE(
-               la.ruolo, lq.role_classic, lst.role_classic,
+               lq.role_classic, lst.role_classic, la.ruolo,
                CASE ls.ruolo_fantacalcio_it
                    WHEN 'P' THEN 'GK' WHEN 'D' THEN 'DEF' WHEN 'C' THEN 'MID' WHEN 'A' THEN 'FWD' END,
                CASE ls.ruolo_standard

@@ -127,14 +127,14 @@ class TestSchemaENormalizzazione(unittest.TestCase):
         self.db.execute(
             "INSERT INTO fantacalcio_it_quotations "
             "(quotation_id, player_id, source_record_id, role_classic, fvm_classic_1000, valid_from) "
-            "VALUES ('fq', 'p1', 'sr-f', 'FWD', 100, '2026-2027')"
+            "VALUES ('fq', 'p1', 'sr-f', 'MID', 100, '2026-2027')"
         )
 
         rows = self.db.execute(
-            "SELECT player_name, team_name, fvm, fvm_parametrized, average_auction_price, is_pct, data_status "
+            "SELECT player_name, team_name, role, fvm, fvm_parametrized, average_auction_price, is_pct, data_status "
             "FROM app_players"
         ).fetchall()
-        self.assertEqual(rows, [("Mario Rossi", "Inter", 100.0, 50.0, 42.5, 78.0, "available")])
+        self.assertEqual(rows, [("Mario Rossi", "Inter", "MID", 100.0, 50.0, 42.5, 78.0, "available")])
 
     def test_app_players_segnala_valori_mancanti_senza_inventarli(self):
         self.db.execute("INSERT INTO teams(team_id, canonical_name) VALUES ('t1', 'Roma')")
