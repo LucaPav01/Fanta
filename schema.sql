@@ -328,6 +328,24 @@ WITH latest_auction AS (
     FROM player_source_records
     WHERE player_id IS NOT NULL
     GROUP BY player_id
+), resolved_role AS (
+    -- Se il ruolo canonico manca, ripiega sulle colonne ruolo_* dello snapshot
+    -- Excel-Online (codici P/D/C/A, T=trequartista trattato come MID).
+    SELECT p.player_id,
+           COALESCE(
+               la.ruolo, lq.role_classic, lst.role_classic,
+               CASE ls.ruolo_fantacalcio_it
+                   WHEN 'P' THEN 'GK' WHEN 'D' THEN 'DEF' WHEN 'C' THEN 'MID' WHEN 'A' THEN 'FWD' END,
+               CASE ls.ruolo_standard
+                   WHEN 'P' THEN 'GK' WHEN 'D' THEN 'DEF' WHEN 'C' THEN 'MID' WHEN 'A' THEN 'FWD' END,
+               CASE ls.ruolo_trequartista
+                   WHEN 'P' THEN 'GK' WHEN 'D' THEN 'DEF' WHEN 'C' THEN 'MID' WHEN 'A' THEN 'FWD' WHEN 'T' THEN 'MID' END
+           ) AS role
+    FROM players p
+    LEFT JOIN latest_auction la ON la.player_id = p.player_id
+    LEFT JOIN latest_quotation lq ON lq.player_id = p.player_id
+    LEFT JOIN latest_statistics lst ON lst.player_id = p.player_id
+    LEFT JOIN latest_snapshot ls ON ls.player_id = p.player_id
 )
 SELECT
     p.player_id,
@@ -338,7 +356,7 @@ SELECT
     t.canonical_name AS team_name,
     ct.competition_name,
     ct.season,
-    COALESCE(ap.ruolo, fq.role_classic, fs.role_classic) AS role,
+    rr.role AS role,
     fq.fvm_classic_1000 AS fvm,
     CASE WHEN fq.fvm_classic_1000 IS NULL THEN NULL
          ELSE fq.fvm_classic_1000 * af.budget_bucket / 1000.0 END AS fvm_parametrized,
@@ -367,8 +385,8 @@ SELECT
          WHEN COALESCE(a.needs_verification, 0) = 1 THEN 'verify'
          ELSE 'available' END AS is_status,
     CASE WHEN COALESCE(a.needs_verification, 0) = 1 THEN 'verify'
-         WHEN COALESCE(ap.ruolo, fq.role_classic, fs.role_classic) IS NULL
-           OR fq.fvm_classic_1000 IS NULL OR ae.average_price IS NULL OR ps.is_pct IS NULL
+         WHEN rr.role IS NULL
+           OR (fq.fvm_classic_1000 IS NULL AND ae.average_price IS NULL AND ps.is_pct IS NULL)
            THEN 'missing'
          ELSE 'available' END AS data_status,
     COALESCE(s.source_names, '') AS source_names
@@ -383,6 +401,7 @@ LEFT JOIN latest_quotation fq ON fq.player_id = p.player_id
 LEFT JOIN latest_statistics fs ON fs.player_id = p.player_id
 LEFT JOIN alias_summary a ON a.player_id = p.player_id
 LEFT JOIN source_summary s ON s.player_id = p.player_id
+LEFT JOIN resolved_role rr ON rr.player_id = p.player_id
 LEFT JOIN data_sources qs ON qs.source_name = 'fantacalcio-it-quotazioni'
 LEFT JOIN data_sources aps ON aps.source_name = 'fantacalcio-online-csv'
 LEFT JOIN data_sources iss ON iss.source_name = 'fantacalcio-online-excel';

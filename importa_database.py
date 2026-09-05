@@ -53,6 +53,8 @@ SCHEMA_PATH = ROOT / "schema.sql"
 PLAYER_ALIASES_PATH = ROOT / "player_aliases.csv"
 TEAM_ALIASES_PATH = ROOT / "team_aliases.csv"
 MATCH_REVIEW_PATH = ROOT / "match_review.csv"
+DUPLICATE_OVERRIDES_PATH = ROOT / "duplicate_overrides.csv"
+NAME_OVERRIDES_PATH = ROOT / "name_overrides.csv"
 ENRICHED_EXPORT_PATH = ROOT / "players_enriched.csv"
 QUALITY_REPORT_PATH = ROOT / "quality_report.txt"
 APP_DATABASE_PATH = ROOT / "fantacalcio_app.db"
@@ -571,6 +573,152 @@ def sync_app_configuration(conn, team_aliases: list[dict]) -> None:
 
 
 # ------------------------------------------------------------------
+# Fase 4b: fusione duplicati identità (stessa persona, player_id diversi
+# sfuggiti alle due passate di matching indipendenti) + correzione nomi.
+# Applicata DOPO l'arricchimento e PRIMA dei controlli/pubblicazione, cosi'
+# che data_status/fvm_status/auction_price_status/is_status (calcolati dalla
+# vista app_players sui dati gia' fusi) non marchino piu' "mancante" una
+# scheda che in realta' ha i numeri, solo sparsi tra le due righe originarie.
+# ------------------------------------------------------------------
+def load_duplicate_overrides() -> list[dict]:
+    if not DUPLICATE_OVERRIDES_PATH.exists():
+        return []
+    with DUPLICATE_OVERRIDES_PATH.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def load_name_overrides() -> list[dict]:
+    if not NAME_OVERRIDES_PATH.exists():
+        return []
+    with NAME_OVERRIDES_PATH.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def merge_child_rows(cur, table: str, id_column: str, unique_columns: tuple, fillable_columns: tuple,
+                      principal_id: str, merged_id: str) -> None:
+    """Riassegna al player_id principale le righe della tabella che appartenevano
+    al player_id fuso. Se il principale ha gia' una riga con la stessa chiave
+    (unique_columns), riempie solo i campi vuoti e scarta la riga fusa."""
+    columns = [row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()]
+    merged_rows = cur.execute(f"SELECT * FROM {table} WHERE player_id = ?", (merged_id,)).fetchall()
+    for merged_row in merged_rows:
+        merged = dict(zip(columns, merged_row))
+        conditions = ["player_id = ?"]
+        params = [principal_id]
+        for column in unique_columns:
+            if column == "player_id":
+                continue
+            conditions.append(f"{column} = ?")
+            params.append(merged[column])
+        existing = cur.execute(
+            f"SELECT * FROM {table} WHERE {' AND '.join(conditions)}", params
+        ).fetchone()
+        if existing is None:
+            cur.execute(f"UPDATE {table} SET player_id = ? WHERE {id_column} = ?",
+                        (principal_id, merged[id_column]))
+            continue
+        existing_row = dict(zip(columns, existing))
+        updates = {
+            column: merged[column]
+            for column in fillable_columns
+            if existing_row.get(column) in (None, "") and merged.get(column) not in (None, "")
+        }
+        if updates:
+            set_clause = ", ".join(f"{column} = ?" for column in updates)
+            cur.execute(f"UPDATE {table} SET {set_clause} WHERE {id_column} = ?",
+                        (*updates.values(), existing_row[id_column]))
+        cur.execute(f"DELETE FROM {table} WHERE {id_column} = ?", (merged[id_column],))
+
+
+def merge_player_aliases(cur, principal_id: str, merged_id: str) -> None:
+    """Unisce gli alias cosi' che la ricerca trovi il giocatore con entrambe
+    le grafie viste nelle fonti."""
+    rows = cur.execute(
+        "SELECT alias_id, alias_normalized, source_name FROM player_aliases WHERE player_id = ?",
+        (merged_id,),
+    ).fetchall()
+    for alias_id, alias_normalized, source_name in rows:
+        conflict = cur.execute(
+            "SELECT 1 FROM player_aliases WHERE source_name = ? AND alias_normalized = ? AND player_id != ?",
+            (source_name, alias_normalized, merged_id),
+        ).fetchone()
+        if conflict:
+            cur.execute("DELETE FROM player_aliases WHERE alias_id = ?", (alias_id,))
+        else:
+            cur.execute("UPDATE player_aliases SET player_id = ? WHERE alias_id = ?", (principal_id, alias_id))
+
+
+def apply_duplicate_overrides(conn) -> int:
+    overrides = load_duplicate_overrides()
+    cur = conn.cursor()
+    merged_count = 0
+    for row in overrides:
+        principal_id = row["player_id_principale"].strip()
+        merged_id = row["player_id_da_fondere"].strip()
+        if not cur.execute("SELECT 1 FROM players WHERE player_id = ?", (merged_id,)).fetchone():
+            continue
+
+        merge_child_rows(cur, "auction_prices", "price_id", ("player_id", "valid_from"),
+                          ("team_id", "source_record_id", "ruolo", "kap", "price_8sq_350",
+                           "price_10sq_350", "price_8sq_500", "price_10sq_500", "mv", "presenze"),
+                          principal_id, merged_id)
+        merge_child_rows(cur, "auction_price_estimates", "estimate_id",
+                          ("player_id", "teams_bucket", "budget_bucket", "valid_from"),
+                          ("source_record_id", "average_price"), principal_id, merged_id)
+        merge_child_rows(cur, "player_snapshots", "snapshot_id", ("player_id", "valid_from"),
+                          ("team_id", "source_record_id", "eta", "rat", "pot", "is_pct",
+                           "ruolo_standard", "ruolo_trequartista", "ruolo_fantacalcio_it"),
+                          principal_id, merged_id)
+        merge_child_rows(cur, "fantacalcio_it_quotations", "quotation_id", ("player_id", "valid_from"),
+                          ("source_record_id", "role_classic", "role_mantra", "quotation_initial",
+                           "quotation_current", "quotation_delta", "fvm_classic_1000", "fvm_mantra_1000"),
+                          principal_id, merged_id)
+        merge_child_rows(cur, "fantacalcio_it_statistics", "statistic_id", ("player_id", "valid_from"),
+                          ("source_record_id", "role_classic", "role_mantra", "appearances",
+                           "average_rating", "fantasy_average", "goals_for", "goals_against",
+                           "penalties_saved", "penalties_taken", "penalties_scored", "penalties_missed",
+                           "assists", "yellow_cards", "red_cards", "own_goals"),
+                          principal_id, merged_id)
+
+        cur.execute("UPDATE player_source_records SET player_id = ? WHERE player_id = ?",
+                    (principal_id, merged_id))
+        merge_player_aliases(cur, principal_id, merged_id)
+
+        principal_first_name, principal_team_id = cur.execute(
+            "SELECT canonical_first_name, current_team_id FROM players WHERE player_id = ?",
+            (principal_id,),
+        ).fetchone()
+        merged_first_name, merged_team_id = cur.execute(
+            "SELECT canonical_first_name, current_team_id FROM players WHERE player_id = ?",
+            (merged_id,),
+        ).fetchone()
+        cur.execute(
+            "UPDATE players SET canonical_first_name = ?, current_team_id = ? WHERE player_id = ?",
+            (principal_first_name or merged_first_name, principal_team_id or merged_team_id, principal_id),
+        )
+        cur.execute("DELETE FROM players WHERE player_id = ?", (merged_id,))
+        merged_count += 1
+    conn.commit()
+    print(f"  giocatori fusi da duplicate_overrides.csv: {merged_count}")
+    return merged_count
+
+
+def apply_name_overrides(conn) -> int:
+    overrides = load_name_overrides()
+    cur = conn.cursor()
+    applied = 0
+    for row in overrides:
+        cur.execute(
+            "UPDATE players SET canonical_full_name = ? WHERE player_id = ?",
+            (row["nome_corretto"].strip(), row["player_id"].strip()),
+        )
+        applied += cur.rowcount
+    conn.commit()
+    print(f"  nomi corretti da name_overrides.csv: {applied}")
+    return applied
+
+
+# ------------------------------------------------------------------
 # Fase 5: controlli di qualità
 # ------------------------------------------------------------------
 def run_quality_checks(conn, counts: dict) -> str:
@@ -773,6 +921,10 @@ def main():
     print(f"  player_snapshots scritte/aggiornate: {n_snapshots}")
     print(f"  fantacalcio_it_statistics scritte/aggiornate: {n_fc_stats}")
     print(f"  fantacalcio_it_quotations scritte/aggiornate: {n_fc_quotes}")
+
+    print("\n[4b/6] Fusione duplicati identità e correzione nomi")
+    apply_duplicate_overrides(conn)
+    apply_name_overrides(conn)
 
     print("\n[5/6] Controlli di qualità")
     run_quality_checks(conn, counts)

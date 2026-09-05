@@ -5,6 +5,12 @@
     "teams": 10,
     "budget": 500
   },
+  "squad_composition": {
+    "GK": 3,
+    "DEF": 8,
+    "MID": 8,
+    "FWD": 6
+  },
   "source_files": {
     "fantacalcio_online_csv": "fantacalcio_prezzi.csv",
     "fantacalcio_online_excel": "Quotazioni Fantacalcio-Online (4).xlsx",

@@ -6,5 +6,6 @@ __pycache__/
 venv/
 /fantacalcio.db
 /fantacalcio_app.db.tmp
+/.fanta_state.json
 quality_report.txt
 *.xlsx

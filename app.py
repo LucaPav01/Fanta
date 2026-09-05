@@ -19,6 +19,18 @@ from app_data import (
     player_url,
     query_players,
 )
+from app_state import (
+    cancel_auction_status,
+    load_state,
+    mark_bought,
+    mark_taken,
+    normalize_state,
+    parse_state,
+    save_state,
+    serialize_state,
+    taken_player_ids,
+    toggle_favorite,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -27,7 +39,50 @@ DEVELOPMENT_DATABASE_PATH = ROOT / "fantacalcio.db"
 DATABASE_PATH = PUBLISHED_DATABASE_PATH if PUBLISHED_DATABASE_PATH.exists() else DEVELOPMENT_DATABASE_PATH
 CONFIG = json.loads((ROOT / "app_config.json").read_text(encoding="utf-8"))
 ROLE_LABELS = {"GK": "Portieri", "DEF": "Difensori", "MID": "Centrocampisti", "FWD": "Attaccanti"}
-PAGE_SIZE = 30
+ROLE_FILTER_LABELS = {"GK": "P", "DEF": "D", "MID": "C", "FWD": "A"}
+PAGE_SIZE = 15
+STATE_PATH = ROOT / ".fanta_state.json"
+STATE_KEY = "fanta_state"
+
+
+def initialize_state() -> None:
+    if STATE_KEY in st.session_state:
+        return
+    state, warning = load_state(STATE_PATH)
+    st.session_state[STATE_KEY] = state
+    st.session_state["state_backup"] = serialize_state(state)
+    if warning:
+        st.session_state["state_warning"] = warning
+
+
+def replace_state(state, *, sync_backup: bool = True) -> bool:
+    """Salva prima su disco e pubblica poi lo stesso stato in sessione."""
+    normalized = normalize_state(state)
+    try:
+        save_state(STATE_PATH, normalized)
+    except OSError as exc:
+        st.error(f"Modifica non salvata: {exc}")
+        return False
+    st.session_state[STATE_KEY] = normalized
+    if sync_backup:
+        st.session_state["state_backup"] = serialize_state(normalized)
+    return True
+
+
+def set_flash(message: str) -> None:
+    st.session_state["state_flash"] = message
+
+
+def favorite_button(player_id: str, player_name: str, key_prefix: str) -> None:
+    favorites = st.session_state[STATE_KEY]["preferiti"]
+    is_favorite = player_id in favorites
+    label = "★" if is_favorite else "☆"
+    help_text = "Rimuovi dai preferiti" if is_favorite else "Aggiungi ai preferiti"
+    if st.button(label, key=f"{key_prefix}_favorite_{player_id}", help=help_text):
+        if replace_state(toggle_favorite(st.session_state[STATE_KEY], player_id)):
+            action = "rimosso dai" if is_favorite else "aggiunto ai"
+            set_flash(f"{player_name} {action} preferiti.")
+            st.rerun()
 
 
 def metric_value(value, status: str, suffix: str = "") -> tuple[str, str]:
@@ -72,37 +127,49 @@ def sync_query_params(filters: FilterState, selected_player: str | None) -> None
         st.query_params.update(desired)
 
 
-def render_card(row, filters: FilterState, selected: bool = False) -> None:
+def render_card(row, filters: FilterState, key_prefix: str, selected: bool = False) -> None:
     role = ROLE_LABELS.get(row["role"], row["role"] or "Ruolo da definire")
     fvm, fvm_help = metric_value(row["fvm"], row["fvm_status"])
     price, price_help = metric_value(row["average_auction_price"], row["auction_price_status"])
     is_value, is_help = metric_value(row["is_pct"], row["is_status"], "%")
 
     with st.container(border=True):
-        title, action = st.columns([4, 1])
-        with title:
-            st.markdown(f"### {escape(row['player_name'])}")
-            st.caption(f"{escape(row['team_name'])} · {escape(role)}")
-        with action:
-            if selected:
-                st.markdown("<span class='selected-pill'>Selezionato</span>", unsafe_allow_html=True)
-            else:
-                st.link_button("Apri", player_url(filters, row["player_id"]), use_container_width=True)
+        title, favorite = st.columns([5, 1])
+        title.markdown(f"### {escape(row['player_name'])}")
+        with favorite:
+            favorite_button(row["player_id"], row["player_name"], key_prefix)
+        st.caption(f"{escape(row['team_name'])} · {escape(role)}")
 
-        columns = st.columns(3)
+        columns = st.columns(2)
         for column, label, value, help_text in zip(
             columns,
-            ("FVM", "Prezzo medio", "IS"),
-            (fvm, price, is_value),
-            (fvm_help, price_help, is_help),
+            ("FVM", "Prezzo medio"),
+            (fvm, price),
+            (fvm_help, price_help),
         ):
             column.metric(label, value, help=help_text)
+
+        st.markdown(
+            f"<span class='secondary-pill' title='{escape(is_help)}'>IS {escape(is_value)} · {escape(is_help)}</span>",
+            unsafe_allow_html=True,
+        )
+        if selected:
+            st.markdown("<span class='selected-pill'>Selezionato</span>", unsafe_allow_html=True)
+        else:
+            st.link_button(
+                f"Apri scheda di {row['player_name']}",
+                player_url(filters, row["player_id"]),
+                use_container_width=True,
+            )
 
 
 def render_player_detail(row) -> None:
     """Scheda completa per decidere durante l'asta, ordinata per priorità."""
     role = ROLE_LABELS.get(row["role"], row["role"] or "Ruolo da definire")
-    st.markdown(f"## {escape(row['player_name'])}")
+    title, favorite = st.columns([5, 1])
+    title.markdown(f"## {escape(row['player_name'])}")
+    with favorite:
+        favorite_button(row["player_id"], row["player_name"], "detail")
     st.caption(f"{escape(row['team_name'])} · {escape(role)}")
 
     summary = st.columns(3)
@@ -163,6 +230,90 @@ def render_player_detail(row) -> None:
     elif row["data_status"] == "missing":
         st.info("La scheda contiene dati mancanti, mostrati con —.")
 
+    st.markdown("### Stato asta")
+    purchase = next(
+        (
+            item
+            for item in st.session_state[STATE_KEY]["asta"]["miei"]
+            if item["player_id"] == row["player_id"]
+        ),
+        None,
+    )
+    is_taken = row["player_id"] in st.session_state[STATE_KEY]["asta"]["presi"]
+    if purchase:
+        st.success(f"Preso da me per {purchase['prezzo_pagato']} crediti")
+    elif is_taken:
+        st.info("Preso da altri")
+    else:
+        st.caption("Giocatore disponibile")
+
+    price = st.number_input(
+        "Prezzo pagato",
+        min_value=1,
+        step=1,
+        value=purchase["prezzo_pagato"] if purchase else 1,
+        key=f"auction_price_{row['player_id']}",
+    )
+    if st.button("Preso da me", use_container_width=True, key=f"mine_{row['player_id']}"):
+        if replace_state(mark_bought(st.session_state[STATE_KEY], row["player_id"], int(price))):
+            set_flash(f"{row['player_name']} aggiunto alla tua rosa.")
+            st.rerun()
+    if st.button("Preso da altri", use_container_width=True, key=f"taken_{row['player_id']}"):
+        if replace_state(mark_taken(st.session_state[STATE_KEY], row["player_id"])):
+            set_flash(f"{row['player_name']} segnato come preso da altri.")
+            st.rerun()
+    if st.button(
+        "Annulla",
+        use_container_width=True,
+        disabled=not purchase and not is_taken,
+        key=f"cancel_{row['player_id']}",
+    ):
+        if replace_state(cancel_auction_status(st.session_state[STATE_KEY], row["player_id"])):
+            set_flash(f"Stato asta annullato per {row['player_name']}.")
+            st.rerun()
+
+
+def render_auction(rows) -> None:
+    state = st.session_state[STATE_KEY]
+    purchases = state["asta"]["miei"]
+    total_spent = sum(item["prezzo_pagato"] for item in purchases)
+    budget = CONFIG["auction"]["budget"]
+    st.metric("Crediti residui", f"{budget - total_spent} / {budget}")
+
+    players_by_id = {row["player_id"]: row for row in rows}
+    purchases_by_id = {item["player_id"]: item for item in purchases}
+    st.markdown("### La mia rosa")
+    for role, maximum in CONFIG["squad_composition"].items():
+        role_players = [
+            players_by_id[player_id]
+            for player_id in purchases_by_id
+            if player_id in players_by_id and players_by_id[player_id]["role"] == role
+        ]
+        st.markdown(f"**{ROLE_LABELS.get(role, role)} · {len(role_players)}/{maximum} slot**")
+        if role_players:
+            for player in role_players:
+                price = purchases_by_id[player["player_id"]]["prezzo_pagato"]
+                st.write(f"{player['player_name']} · {player['team_name']} — {price} crediti")
+        else:
+            st.caption("Nessun acquisto")
+
+    missing_players = [item for item in purchases if item["player_id"] not in players_by_id]
+    if missing_players:
+        st.warning(f"{len(missing_players)} acquisti salvati non sono presenti nel database attuale.")
+
+    st.markdown("### Copia o ripristina lo stato")
+    st.caption("Conserva questo JSON come copia di sicurezza. Incollane uno valido e premi Ripristina.")
+    serialized = st.text_area("Stato JSON", height=260, key="state_backup")
+    if st.button("Ripristina stato", use_container_width=True):
+        try:
+            restored = parse_state(serialized)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if replace_state(restored, sync_backup=False):
+                set_flash("Stato ripristinato dal JSON.")
+                st.rerun()
+
 
 st.set_page_config(page_title="Fanta · Asta", page_icon="⚽", layout="centered")
 st.markdown(
@@ -176,6 +327,9 @@ st.markdown(
     [data-testid="stMetricValue"] {font-size: 1.35rem;}
     .selected-pill {display: inline-block; padding: .3rem .5rem; border-radius: 1rem;
       color: #0b6b3a; background: #dff5e8; font-size: .72rem; font-weight: 700;}
+    .secondary-pill {display: inline-block; margin: .65rem 0; padding: .3rem .55rem;
+      border-radius: 1rem; color: #475467; background: #eef1f4; font-size: .75rem;
+      font-weight: 650;}
     @media (max-width: 480px) {
       .block-container {padding-left: .75rem; padding-right: .75rem;}
       [data-testid="stHorizontalBlock"] {gap: .45rem;}
@@ -185,11 +339,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+initialize_state()
 st.title("Asta Fanta")
 st.caption(
     f"{CONFIG['competition']} · {CONFIG['auction']['teams']} squadre · "
     f"{CONFIG['auction']['budget']} crediti"
 )
+
+section = st.radio(
+    "Sezione",
+    ("Giocatori", "Preferiti", "Asta"),
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_section",
+)
+
+if warning := st.session_state.pop("state_warning", None):
+    st.warning(warning)
+if flash := st.session_state.pop("state_flash", None):
+    st.success(flash)
 
 if not DATABASE_PATH.exists():
     st.error("Database dell’app non trovato. Esegui prima `python3 importa_database.py`.")
@@ -197,33 +365,64 @@ if not DATABASE_PATH.exists():
 
 with connect_read_only(DATABASE_PATH) as connection:
     teams, roles = available_filters(connection)
+    all_rows = query_players(connection, FilterState())
+
+    if section == "Preferiti":
+        st.subheader("Preferiti")
+        favorite_ids = set(st.session_state[STATE_KEY]["preferiti"])
+        favorite_rows = [row for row in all_rows if row["player_id"] in favorite_ids]
+        favorite_selected = st.query_params.get("player")
+        selected_row = (
+            get_player_detail(connection, favorite_selected)
+            if favorite_selected in favorite_ids
+            else None
+        )
+        if selected_row is not None:
+            st.link_button("← Torna ai preferiti", "?sort=fvm")
+            render_player_detail(selected_row)
+        elif not favorite_rows:
+            st.info("Non hai ancora aggiunto giocatori ai preferiti.")
+        else:
+            favorite_filters = FilterState()
+            for row in favorite_rows:
+                render_card(row, favorite_filters, "favorites")
+        st.stop()
+
+    if section == "Asta":
+        st.subheader("Asta")
+        render_auction(all_rows)
+        st.stop()
 
     initial = FilterState.from_mapping(st.query_params)
     selected_player = st.query_params.get("player")
 
     search = st.text_input("Cerca giocatore", value=initial.search, placeholder="Nome o cognome")
-    team_col, role_col = st.columns(2)
-    team_options = ["Tutte", *teams]
     role_options = ["Tutti", *roles]
-    with team_col:
+    role = st.radio(
+        "Ruolo",
+        role_options,
+        format_func=lambda value: ROLE_FILTER_LABELS.get(value, value),
+        index=role_options.index(initial.role) if initial.role in role_options else 0,
+        horizontal=True,
+    )
+
+    team_options = ["Tutte", *teams]
+    sort_labels = list(SORT_OPTIONS)
+    current_sort_label = next((label for label, value in SORT_OPTIONS.items() if value == initial.sort), sort_labels[0])
+    with st.expander("Squadra e ordinamento", expanded=False):
         team = st.selectbox(
             "Squadra", team_options,
             index=team_options.index(initial.team) if initial.team in team_options else 0,
         )
-    with role_col:
-        role = st.selectbox(
-            "Ruolo", role_options,
-            format_func=lambda value: ROLE_LABELS.get(value, value),
-            index=role_options.index(initial.role) if initial.role in role_options else 0,
-        )
-
-    sort_labels = list(SORT_OPTIONS)
-    current_sort_label = next((label for label, value in SORT_OPTIONS.items() if value == initial.sort), sort_labels[0])
-    sort_label = st.selectbox("Ordina per", sort_labels, index=sort_labels.index(current_sort_label))
+        sort_label = st.selectbox("Ordina per", sort_labels, index=sort_labels.index(current_sort_label))
     filters = FilterState(search=search, team=team, role=role, sort=SORT_OPTIONS[sort_label])
     rows = query_players(connection, filters)
+    hide_taken = st.toggle("Nascondi i giocatori già presi", value=False)
+    if hide_taken:
+        unavailable_ids = taken_player_ids(st.session_state[STATE_KEY])
+        rows = [row for row in rows if row["player_id"] not in unavailable_ids]
 
-    filter_signature = (filters.search, filters.team, filters.role, filters.sort)
+    filter_signature = (filters.search, filters.team, filters.role, filters.sort, hide_taken)
     if st.session_state.get("filter_signature") != filter_signature:
         st.session_state.filter_signature = filter_signature
         st.session_state.visible_players = PAGE_SIZE
@@ -246,7 +445,7 @@ with connect_read_only(DATABASE_PATH) as connection:
             st.info("Nessun giocatore corrisponde ai filtri scelti.")
         visible_count = st.session_state.get("visible_players", PAGE_SIZE)
         for row in rows[:visible_count]:
-            render_card(row, filters)
+            render_card(row, filters, "players")
         if visible_count < len(rows):
             remaining = len(rows) - visible_count
             if st.button(f"Mostra altri ({remaining})", use_container_width=True):
