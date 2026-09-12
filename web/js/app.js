@@ -180,6 +180,14 @@ function cardOptions(player) {
   const auctionStatus = statusFor(player.id);
   return { onOpen: openDetail, onToggleFavorite: togglePlayerFavorite, isFavorite: favoriteIds().has(player.id), auctionStatus: auctionStatus.taken ? (auctionStatus.mine ? "mine" : "other") : "" };
 }
+function scaledPrice(player) {
+  if (player.price === null || player.price === undefined || !player.auction_budget) return player.price;
+  const scaled = player.price * (state.local.budget_iniziale / player.auction_budget);
+  return Math.round(scaled * 100) / 100;
+}
+function withBudgetPrice(player) {
+  return { ...player, price: scaledPrice(player), price_budget: state.local.budget_iniziale };
+}
 function appendInfiniteList(players, parent) {
   if (observer) observer.disconnect();
   const list = element("div", "player-list");
@@ -188,7 +196,7 @@ function appendInfiniteList(players, parent) {
   const sentinel = element("div", "list-sentinel");
   const appendNext = () => {
     const fragment = document.createDocumentFragment();
-    players.slice(rendered, rendered + 40).forEach((player) => fragment.append(createPlayerCard(player, cardOptions(player))));
+    players.slice(rendered, rendered + 40).forEach((player) => fragment.append(createPlayerCard(withBudgetPrice(player), cardOptions(player))));
     rendered += 40; list.append(fragment);
     if (rendered >= players.length) sentinel.remove();
   };
