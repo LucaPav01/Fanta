@@ -338,12 +338,28 @@ class TestSchemaENormalizzazione(unittest.TestCase):
         ).fetchall()
         counts = {(role, tier): count for role, tier, count in rows}
 
-        self.assertEqual(counts[("FWD", "Fascia 1")], 10)
-        self.assertEqual(counts[("FWD", "Fascia 2")], 10)
-        self.assertEqual(counts[("FWD", "Fascia 3")], 1)
-        self.assertEqual(counts[("GK", "Fascia 1")], 5)
-        self.assertEqual(counts[("GK", "Fascia 2")], 5)
-        self.assertEqual(counts[("GK", "Fascia 3")], 1)
+        self.assertEqual(counts[("FWD", "Fascia 1")], 8)
+        self.assertEqual(counts[("FWD", "Fascia 2")], 8)
+        self.assertEqual(counts[("FWD", "Fascia 3")], 5)
+        self.assertEqual(counts[("GK", "Fascia 1")], 8)
+        self.assertEqual(counts[("GK", "Fascia 2")], 3)
+
+    def test_fascia_6_raccoglie_tutti_i_giocatori_oltre_la_quinta_fascia(self):
+        self._setup_fasce_fixture()
+        # 45 FWD: le prime 5 fasce assorbono 8 giocatori ciascuna (40 totali),
+        # i restanti 5 finiscono tutti in un'unica Fascia 6.
+        for position in range(45):
+            self._insert_player_con_fvm(f"f{position:02}", "FWD", 100 - position)
+
+        rows = self.db.execute(
+            "SELECT fvm_tier, COUNT(*) FROM app_players WHERE role = 'FWD' "
+            "GROUP BY fvm_tier ORDER BY fvm_tier"
+        ).fetchall()
+        counts = dict(rows)
+
+        for tier in range(1, 6):
+            self.assertEqual(counts[f"Fascia {tier}"], 8)
+        self.assertEqual(counts["Fascia 6"], 5)
 
     def test_fascia_fvm_e_null_quando_il_fvm_manca(self):
         self._setup_fasce_fixture()

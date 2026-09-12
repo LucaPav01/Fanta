@@ -48,14 +48,18 @@ class TestExportWebData(unittest.TestCase):
                 self.assertGreaterEqual(player["fvm_percentile"], 0)
                 self.assertLessEqual(player["fvm_percentile"], 100)
 
-        for role, limit in {"GK": 5, "DEF": 10, "MID": 10, "FWD": 10}.items():
+        for role in ("GK", "DEF", "MID", "FWD"):
             with self.subTest(role=role):
                 tier_counts = {}
                 for player in payload["players"]:
                     if player["role"] == role and player["fvm_tier"]:
                         tier_counts[player["fvm_tier"]] = tier_counts.get(player["fvm_tier"], 0) + 1
                 self.assertTrue(tier_counts)
-                self.assertTrue(all(count <= limit for count in tier_counts.values()))
+                # Fascia 1-5 hanno al massimo 8 giocatori; la Fascia 6 raccoglie
+                # tutti i giocatori restanti senza limite di capienza.
+                for tier, count in tier_counts.items():
+                    if tier != "Fascia 6":
+                        self.assertLessEqual(count, 8)
 
     def test_esportazione_solleva_errore_se_un_campo_obbligatorio_e_nullo(self):
         with tempfile.TemporaryDirectory() as directory:

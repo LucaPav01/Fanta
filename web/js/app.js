@@ -1,5 +1,5 @@
 import { buildSearchIndex, closestLastNames, searchPlayers } from "./search.js";
-import { MAX_OPPONENT_TEAMS, MY_TEAM_ID, addTeam, assignmentFor, cancelAuctionStatus, decodeStateFromLink, deleteTeam, encodeStateForLink, loadState, markBought, markTaken, myPurchases, normalizeState, parseState, readFromIndexedDB, remainingCredits, renameTeam, saveState, serializeState, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
+import { MAX_OPPONENT_TEAMS, MY_TEAM_ID, addTeam, assignmentFor, cancelAuctionStatus, decodeStateFromLink, deleteTeam, encodeStateForLink, loadState, markBought, markTaken, myPurchases, normalizeState, parseState, readFromIndexedDB, remainingCredits, renameTeam, saveState, serializeState, setBudget, setHideTaken, takenPlayerIds, toggleFavorite } from "./state.js";
 import { createPlayerCard, openOptionsSheet, openPlayerDetail, roleLabel } from "./ui.js";
 
 const ROUTES = ["giocatori", "preferiti", "asta"];
@@ -81,7 +81,7 @@ function persist(next) {
 function validateAuctionState(next) {
   const purchases = myPurchases(next);
   const spent = purchases.reduce((total, { prezzo_pagato }) => total + prezzo_pagato, 0);
-  if (spent > state.auction.budget) throw new Error("Il backup supera i " + state.auction.budget + " crediti disponibili.");
+  if (spent > next.budget_iniziale) throw new Error("Il backup supera i " + next.budget_iniziale + " crediti disponibili.");
   const playersById = new Map(state.players.map((player) => [player.id, player]));
   const counts = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
   next.assegnazioni.forEach(({ player_id }) => {
@@ -109,7 +109,7 @@ function openDetail(player) {
     isFavorite: favoriteIds().has(player.id), auctionStatus: statusFor(player.id), onToggleFavorite: togglePlayerFavorite,
     onMarkBought: (picked, price) => {
       const oldPrice = statusFor(picked.id).mine?.prezzo_pagato || 0;
-      const available = remainingCredits(state.local, state.auction.budget) + oldPrice;
+      const available = remainingCredits(state.local) + oldPrice;
       const teammates = myPurchases(state.local).filter(({ player_id }) => player_id !== picked.id)
         .map(({ player_id }) => state.players.find(({ id }) => id === player_id))
         .filter((teammate) => teammate?.role === picked.role);
@@ -223,13 +223,32 @@ function renderFavorites() {
 function renderAuction() {
   if (observer) observer.disconnect();
   const content = element("section", "auction-view");
-  const remaining = remainingCredits(state.local, state.auction.budget);
-  const spent = state.auction.budget - remaining;
+  const budget = state.local.budget_iniziale;
+  const remaining = remainingCredits(state.local);
+  const spent = budget - remaining;
   const summary = element("section", "auction-summary");
   const summaryCopy = element("div", "auction-summary__copy");
-  summaryCopy.append(element("span", "auction-summary__label", "Crediti residui"), element("span", "auction-summary__sub", `${spent} cr spesi · ${percent(spent, state.auction.budget)}% del budget`));
-  summary.append(summaryCopy, element("strong", "auction-summary__value", `${remaining} / ${state.auction.budget}`));
+  summaryCopy.append(element("span", "auction-summary__label", "Crediti residui"), element("span", "auction-summary__sub", `${spent} cr spesi · ${percent(spent, budget)}% del budget`));
+  summary.append(summaryCopy, element("strong", "auction-summary__value", `${remaining} / ${budget}`));
   content.append(summary);
+  const budgetSection = element("section", "budget-section");
+  budgetSection.append(element("h2", "section-title", "Budget iniziale"), element("p", "backup-section__copy", "Crediti a disposizione di ogni squadra a inizio asta. Puoi cambiarlo finché non scende sotto quanto già speso."));
+  const budgetForm = element("form", "team-form");
+  const budgetInput = document.createElement("input");
+  budgetInput.className = "auction-price-input"; budgetInput.type = "number"; budgetInput.min = "1"; budgetInput.step = "1"; budgetInput.inputMode = "numeric";
+  budgetInput.value = budget; budgetInput.setAttribute("aria-label", "Budget iniziale in crediti");
+  const budgetSave = element("button", "action-button action-button--primary", "Salva"); budgetSave.type = "submit";
+  budgetForm.append(budgetInput, budgetSave);
+  const budgetFeedback = element("p", "auction-action-error");
+  budgetForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = Number(budgetInput.value);
+    if (!Number.isInteger(value) || value < 1) { budgetFeedback.textContent = "Inserisci un intero positivo."; return; }
+    try { persist(setBudget(state.local, value)); renderAuction(); }
+    catch (error) { budgetFeedback.textContent = error.message || "Non riesco ad aggiornare il budget."; }
+  });
+  budgetSection.append(budgetForm, budgetFeedback);
+  content.append(budgetSection);
   if (state.backupMessage) {
     content.append(element("p", "backup-feedback", state.backupMessage));
     state.backupMessage = "";
@@ -255,7 +274,7 @@ function renderAuction() {
     const slots = state.auction.squad_composition[role] || 0;
     const roleSpent = purchases.reduce((total, { prezzo_pagato }) => total + prezzo_pagato, 0);
     const section = element("section", "roster-role");
-    section.append(element("h3", "roster-role__title", `${roleLabel(role)} · ${purchases.length}/${slots} · ${Math.max(0, slots - purchases.length)} liberi`), element("p", "roster-role__budget", `${roleSpent} cr · ${percent(roleSpent, state.auction.budget)}% del budget`));
+    section.append(element("h3", "roster-role__title", `${roleLabel(role)} · ${purchases.length}/${slots} · ${Math.max(0, slots - purchases.length)} liberi`), element("p", "roster-role__budget", `${roleSpent} cr · ${percent(roleSpent, budget)}% del budget`));
     if (!purchases.length) section.append(element("p", "roster-role__empty", "Nessun giocatore acquistato."));
     purchases.forEach(({ player, prezzo_pagato }) => {
       const row = element("button", "roster-player"); row.type = "button";

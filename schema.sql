@@ -352,8 +352,9 @@ WITH latest_auction AS (
     -- separatamente per ruolo (un FWD non va confrontato con un GK). PERCENT_RANK
     -- assegna lo stesso percentile a valori di FVM pari.
     --
-    -- Le fasce sono invece gruppi operativi a capienza fissa: massimo 10
-    -- giocatori per DEF/MID/FWD e 5 per GK. Per rispettare rigorosamente tale
+    -- Le fasce sono invece gruppi operativi a capienza fissa: le prime 5 fasce
+    -- contengono al massimo 8 giocatori ciascuna (per ruolo), la Fascia 6
+    -- raccoglie tutti i giocatori restanti. Per rispettare rigorosamente tale
     -- capienza anche se una parità attraversa il confine della fascia, l'ordine
     -- secondario e' stabile (nome canonico, poi player_id).
     SELECT rr.player_id,
@@ -365,8 +366,7 @@ WITH latest_auction AS (
                ORDER BY fq.fvm_classic_1000 DESC,
                         p.canonical_full_name COLLATE NOCASE,
                         rr.player_id
-           ) AS fvm_position,
-           CASE rr.role WHEN 'GK' THEN 5 ELSE 10 END AS fvm_tier_size
+           ) AS fvm_position
     FROM resolved_role rr
     JOIN players p ON p.player_id = rr.player_id
     JOIN latest_quotation fq ON fq.player_id = rr.player_id
@@ -388,7 +388,8 @@ SELECT
     af.budget_bucket AS fvm_budget,
     ft.fvm_percentile,
     CASE WHEN ft.fvm_position IS NULL THEN NULL
-         ELSE 'Fascia ' || (CAST((ft.fvm_position - 1) / ft.fvm_tier_size AS INTEGER) + 1) END AS fvm_tier,
+         WHEN ft.fvm_position > 40 THEN 'Fascia 6'
+         ELSE 'Fascia ' || (CAST((ft.fvm_position - 1) / 8 AS INTEGER) + 1) END AS fvm_tier,
     ae.average_price AS average_auction_price,
     af.teams_bucket AS auction_teams,
     af.budget_bucket AS auction_budget,

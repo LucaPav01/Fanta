@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_BUDGET,
   MAX_OPPONENT_TEAMS,
   MY_TEAM_ID,
   STATE_STORAGE_KEY,
@@ -20,6 +21,7 @@ import {
   remainingCredits,
   renameTeam,
   saveState,
+  setBudget,
   takenPlayerIds,
   toggleFavorite,
 } from "../web/js/state.js";
@@ -39,7 +41,8 @@ test("preferiti e assegnazioni v2 resistono a una nuova apertura", () => {
   saveState(state, localStorage);
 
   const reopened = loadState(localStorage).state;
-  assert.equal(reopened.schema_version, 2);
+  assert.equal(reopened.schema_version, 3);
+  assert.equal(reopened.budget_iniziale, DEFAULT_BUDGET);
   assert.deepEqual(reopened.preferiti, ["p1"]);
   assert.deepEqual(reopened.assegnazioni, [
     { player_id: "p1", squadra_id: MY_TEAM_ID, prezzo_pagato: 37 },
@@ -61,7 +64,8 @@ test("lo stato locale v1 viene migrato, salvato in v2 e conservato come backup",
   const { state, warning } = loadState(localStorage);
 
   assert.equal(warning, "");
-  assert.equal(state.schema_version, 2);
+  assert.equal(state.schema_version, 3);
+  assert.equal(state.budget_iniziale, 500);
   assert.deepEqual(state.preferiti, ["p3"]);
   assert.deepEqual(state.assegnazioni, [
     { player_id: "p1", squadra_id: MY_TEAM_ID, prezzo_pagato: 12 },
@@ -69,15 +73,30 @@ test("lo stato locale v1 viene migrato, salvato in v2 e conservato come backup",
   ]);
   assert.equal(state.nascondi_gia_presi, true);
   assert.equal(localStorage.getItem(STATE_V1_BACKUP_STORAGE_KEY), v1);
-  assert.equal(JSON.parse(localStorage.getItem(STATE_STORAGE_KEY)).schema_version, 2);
+  assert.equal(JSON.parse(localStorage.getItem(STATE_STORAGE_KEY)).schema_version, 3);
 });
 
 test("anche un backup manuale v1 resta ripristinabile", () => {
   const restored = parseState('{"schema_version":1,"preferiti":[],"asta":{"miei":[{"player_id":"p1","prezzo_pagato":12}],"presi":["p1"]}}');
-  assert.equal(restored.schema_version, 2);
+  assert.equal(restored.schema_version, 3);
+  assert.equal(restored.budget_iniziale, 500);
   assert.deepEqual(restored.assegnazioni, [
     { player_id: "p1", squadra_id: MY_TEAM_ID, prezzo_pagato: 12 },
   ]);
+});
+
+test("uno stato v2 viene migrato con il budget storico di 500 crediti", () => {
+  const restored = parseState('{"schema_version":2,"preferiti":[],"squadre":[],"assegnazioni":[]}');
+  assert.equal(restored.schema_version, 3);
+  assert.equal(restored.budget_iniziale, 500);
+});
+
+test("il budget iniziale è modificabile ma non sotto i crediti già spesi", () => {
+  let state = markBought(emptyState(), "p1", 300);
+  const updated = setBudget(state, 800);
+  assert.equal(updated.budget_iniziale, 800);
+  assert.throws(() => setBudget(state, 200), /crediti già spesi/);
+  assert.throws(() => setBudget(state, 0), /intero positivo/);
 });
 
 test("squadre e assegnazioni sono validate e una squadra in uso è immutabile", () => {
