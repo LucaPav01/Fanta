@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from app_state import (
+    DEFAULT_BUDGET,
     MAX_OPPONENT_TEAMS,
     MY_TEAM_ID,
     add_team,
@@ -18,6 +19,7 @@ from app_state import (
     parse_state,
     rename_team,
     save_state,
+    set_budget,
     taken_player_ids,
     toggle_favorite,
 )
@@ -29,7 +31,8 @@ class TestStatoPreferitiAsta(unittest.TestCase):
         state = mark_bought(state, "p1", 37)
         state = mark_taken(state, "p2")
 
-        self.assertEqual(state["schema_version"], 2)
+        self.assertEqual(state["schema_version"], 3)
+        self.assertEqual(state["budget_iniziale"], DEFAULT_BUDGET)
         self.assertEqual(state["preferiti"], ["p1"])
         self.assertEqual(
             state["assegnazioni"],
@@ -79,9 +82,10 @@ class TestStatoPreferitiAsta(unittest.TestCase):
 
             self.assertIsNone(warning)
             self.assertEqual(backup.read_text(encoding="utf-8"), original)
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 2)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 3)
 
         self.assertEqual(loaded["preferiti"], ["p3"])
+        self.assertEqual(loaded["budget_iniziale"], 500)
         self.assertEqual(
             loaded["assegnazioni"],
             [
@@ -94,11 +98,28 @@ class TestStatoPreferitiAsta(unittest.TestCase):
         restored = parse_state(
             '{"schema_version":1,"preferiti":[],"asta":{"miei":[],"presi":["p2"]}}'
         )
-        self.assertEqual(restored["schema_version"], 2)
+        self.assertEqual(restored["schema_version"], 3)
+        self.assertEqual(restored["budget_iniziale"], 500)
         self.assertEqual(
             restored["assegnazioni"],
             [{"player_id": "p2", "squadra_id": None, "prezzo_pagato": None}],
         )
+
+    def test_stato_v2_viene_migrato_con_budget_storico(self):
+        restored = parse_state(
+            '{"schema_version":2,"preferiti":[],"squadre":[],"assegnazioni":[]}'
+        )
+        self.assertEqual(restored["schema_version"], 3)
+        self.assertEqual(restored["budget_iniziale"], 500)
+
+    def test_budget_iniziale_modificabile_ma_non_sotto_i_crediti_spesi(self):
+        state = mark_bought(empty_state(), "p1", 300)
+        updated = set_budget(state, 800)
+        self.assertEqual(updated["budget_iniziale"], 800)
+        with self.assertRaisesRegex(ValueError, "crediti già spesi"):
+            set_budget(state, 200)
+        with self.assertRaisesRegex(ValueError, "intero positivo"):
+            set_budget(state, 0)
 
     def test_squadre_validate_e_protette_quando_hanno_giocatori(self):
         state = add_team(empty_state(), "I Falchi")

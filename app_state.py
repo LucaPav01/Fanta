@@ -9,9 +9,11 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MY_TEAM_ID = "mia"
 MAX_OPPONENT_TEAMS = 9
+DEFAULT_BUDGET = 1000
+_MIGRATION_BUDGET = 500
 
 
 def empty_state() -> dict[str, Any]:
@@ -21,6 +23,7 @@ def empty_state() -> dict[str, Any]:
         "squadre": [],
         "assegnazioni": [],
         "nascondi_gia_presi": False,
+        "budget_iniziale": DEFAULT_BUDGET,
     }
 
 
@@ -60,7 +63,7 @@ def _migrate_v1(value: dict[str, Any]) -> dict[str, Any]:
         if player_id not in mine_ids
     ]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": 2,
         "preferiti": value.get("preferiti"),
         "squadre": [],
         "assegnazioni": [*mine, *others],
@@ -68,12 +71,23 @@ def _migrate_v1(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _migrate_v2(value: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(value)
+    migrated["schema_version"] = SCHEMA_VERSION
+    migrated.setdefault("budget_iniziale", _MIGRATION_BUDGET)
+    return migrated
+
+
 def _migrate(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Lo stato deve essere un oggetto JSON.")
     version = value.get("schema_version", 1)
     if version == 1:
-        return _migrate_v1(value)
+        value = _migrate_v1(value)
+        version = 2
+    if version == 2:
+        value = _migrate_v2(value)
+        version = SCHEMA_VERSION
     if version != SCHEMA_VERSION:
         raise ValueError("Questo backup usa una versione non supportata dell'app.")
     return value
@@ -140,6 +154,13 @@ def _normalize_assignments(values: Any, teams: list[dict[str, str]]) -> list[dic
     return list(by_player.values())
 
 
+def _normalize_budget(value: Any) -> int:
+    budget = DEFAULT_BUDGET if value is None else value
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise ValueError("Il budget iniziale deve essere un intero positivo.")
+    return budget
+
+
 def normalize_state(value: Any) -> dict[str, Any]:
     """Migra, valida e normalizza il formato usato da file, sessione e ripristino."""
     state = _migrate(value)
@@ -150,6 +171,7 @@ def normalize_state(value: Any) -> dict[str, Any]:
         "squadre": teams,
         "assegnazioni": _normalize_assignments(state.get("assegnazioni"), teams),
         "nascondi_gia_presi": bool(state.get("nascondi_gia_presi", False)),
+        "budget_iniziale": _normalize_budget(state.get("budget_iniziale")),
     }
 
 
@@ -304,3 +326,14 @@ def my_purchases(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def taken_player_ids(state: dict[str, Any]) -> set[str]:
     return {item["player_id"] for item in normalize_state(state)["assegnazioni"]}
+
+
+def set_budget(state: dict[str, Any], budget: int) -> dict[str, Any]:
+    normalized = normalize_state(state)
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise ValueError("Il budget iniziale deve essere un intero positivo.")
+    spent = sum(item["prezzo_pagato"] for item in my_purchases(normalized))
+    if budget < spent:
+        raise ValueError(f"Il budget non può scendere sotto i {spent} crediti già spesi.")
+    normalized["budget_iniziale"] = budget
+    return normalized

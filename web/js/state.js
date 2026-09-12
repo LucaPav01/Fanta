@@ -1,8 +1,10 @@
 export const STATE_STORAGE_KEY = "fanta_state";
 export const STATE_V1_BACKUP_STORAGE_KEY = "fanta_state_backup_v1";
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const MY_TEAM_ID = "mia";
 export const MAX_OPPONENT_TEAMS = 9;
+export const DEFAULT_BUDGET = 1000;
+const MIGRATION_BUDGET = 500;
 const SNAPSHOT_KEYS = ["fanta_state_snap_0", "fanta_state_snap_1", "fanta_state_snap_2"];
 const SNAPSHOT_INDEX_KEY = "fanta_state_snap_idx";
 const IDB_NAME = "fanta";
@@ -16,6 +18,7 @@ export function emptyState() {
     squadre: [],
     assegnazioni: [],
     nascondi_gia_presi: false,
+    budget_iniziale: DEFAULT_BUDGET,
   };
 }
 
@@ -44,7 +47,7 @@ function migrateV1(value) {
     .filter((id) => !mineIds.has(id))
     .map((player_id) => ({ player_id, squadra_id: null, prezzo_pagato: null }));
   return {
-    schema_version: SCHEMA_VERSION,
+    schema_version: 2,
     preferiti: value.preferiti,
     squadre: [],
     assegnazioni: [...mine, ...others],
@@ -52,11 +55,22 @@ function migrateV1(value) {
   };
 }
 
+function migrateV2(value) {
+  return {
+    ...value,
+    schema_version: SCHEMA_VERSION,
+    budget_iniziale: value.budget_iniziale === undefined ? MIGRATION_BUDGET : value.budget_iniziale,
+  };
+}
+
 function migrate(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Il backup non contiene uno stato valido.");
-  if (value.schema_version === undefined || value.schema_version === 1) return migrateV1(value);
-  if (value.schema_version !== SCHEMA_VERSION) throw new Error("Questo backup usa una versione non supportata dell'app.");
-  return value;
+  let state = value;
+  let version = state.schema_version === undefined ? 1 : state.schema_version;
+  if (version === 1) { state = migrateV1(state); version = 2; }
+  if (version === 2) { state = migrateV2(state); version = SCHEMA_VERSION; }
+  if (version !== SCHEMA_VERSION) throw new Error("Questo backup usa una versione non supportata dell'app.");
+  return state;
 }
 
 function normalizeTeams(value) {
@@ -104,6 +118,12 @@ function normalizeAssignments(value, teams) {
   return [...byPlayer.values()];
 }
 
+function normalizeBudget(value) {
+  const budget = value === undefined ? DEFAULT_BUDGET : value;
+  if (!Number.isInteger(budget) || budget < 1) throw new Error("Il budget iniziale deve essere un intero positivo.");
+  return budget;
+}
+
 export function normalizeState(value) {
   const state = migrate(value);
   const teams = normalizeTeams(state.squadre);
@@ -113,6 +133,7 @@ export function normalizeState(value) {
     squadre: teams,
     assegnazioni: normalizeAssignments(state.assegnazioni, teams),
     nascondi_gia_presi: Boolean(state.nascondi_gia_presi),
+    budget_iniziale: normalizeBudget(state.budget_iniziale),
   };
 }
 
@@ -360,6 +381,17 @@ export function takenPlayerIds(state) {
 }
 
 export function remainingCredits(state, budget) {
-  const spent = myPurchases(state).reduce((total, { prezzo_pagato: price }) => total + price, 0);
-  return Math.max(0, budget - spent);
+  const normalized = normalizeState(state);
+  const effectiveBudget = budget === undefined ? normalized.budget_iniziale : budget;
+  const spent = myPurchases(normalized).reduce((total, { prezzo_pagato: price }) => total + price, 0);
+  return Math.max(0, effectiveBudget - spent);
+}
+
+export function setBudget(state, budget) {
+  const next = normalizeState(state);
+  if (!Number.isInteger(budget) || budget < 1) throw new Error("Il budget iniziale deve essere un intero positivo.");
+  const spent = myPurchases(next).reduce((total, { prezzo_pagato: price }) => total + price, 0);
+  if (budget < spent) throw new Error(`Il budget non può scendere sotto i ${spent} crediti già spesi.`);
+  next.budget_iniziale = budget;
+  return next;
 }

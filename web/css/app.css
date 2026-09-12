@@ -687,6 +687,7 @@ html, body {
   accent-color: var(--color-accent);
 }
 
+.budget-section,
 .roster,
 .opponents-section,
 .teams-section,
