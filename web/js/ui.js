@@ -172,7 +172,7 @@ export function openPlayerDetail(player, actions = {}) {
     ["Percentile nel ruolo", value(player.fvm_percentile, "%")],
     [`FVM su ${player.fvm_budget || "—"} cr`, value(player.fvm_parametrized)],
     ["Prezzo medio", value(player.price)],
-    ["Formato prezzo", `${player.auction_teams || "—"} squadre · ${player.auction_budget || "—"} cr`],
+    ["Formato prezzo", `${player.auction_teams || "—"} squadre · ${player.price_budget || player.auction_budget || "—"} cr`],
     ["IS", value(player.is_pct, "%")],
     ["Presenze", value(player.appearances)],
     ["Media voto", value(player.average_rating)],
